@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sabrah — AI Travel Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <main class="shell">
+    <header class="brand">
+      <p class="eyebrow">Voice travel companion</p>
+      <h1>Sabraah</h1>
+      <p class="tagline">AI Travel Assistant</p>
+    </header>
+
+    <section class="status-panel" aria-live="polite">
+      <span id="connectionDot" class="dot"></span>
+      <span id="statusLabel">Ready</span>
+    </section>
+
+    <section class="wake-row">
+      <label class="wake-toggle" for="wakeToggle">
+        <input id="wakeToggle" type="checkbox" checked />
+        <span class="wake-switch" aria-hidden="true"></span>
+        <span class="wake-copy">
+          <strong>Hey Sabraah</strong>
+          <span>Always listen for wake word</span>
+        </span>
+      </label>
+      <p id="wakeHint" class="wake-hint">Say “Hey Sabraah” — English only. See CONVERSATION_FLOW.md</p>
+    </section>
+
+    <section class="orb-wrap" aria-hidden="true">
+      <div id="orb" class="orb idle">
+        <span class="ring"></span>
+        <span class="core"></span>
+      </div>
+    </section>
+
+    <section id="transcript" class="transcript" aria-label="Conversation transcript"></section>
+
+    <section id="offerings" class="offerings" hidden aria-label="Travel options"></section>
+
+    <section class="controls">
+      <button id="talkBtn" class="btn primary" type="button">Start Talking</button>
+      <button id="stopBtn" class="btn" type="button" disabled>Stop</button>
+      <button id="muteBtn" class="btn" type="button">Mute</button>
+      <button id="resetBtn" class="btn ghost" type="button">Reset</button>
+    </section>
+
+    <section class="text-fallback">
+      <label for="textInput">Or type a message</label>
+      <div class="text-row">
+        <input id="textInput" type="text" placeholder="Hi Sabrah" autocomplete="off" />
+        <button id="sendTextBtn" class="btn" type="button">Send</button>
+      </div>
+    </section>
+
+    <section class="upload-row">
+      <label for="travelerFile">Traveler list (.xlsx / .csv) — columns: name, phone, meal, allergies</label>
+      <div class="text-row">
+        <input id="travelerFile" type="file" accept=".xlsx,.csv,.xlsm" />
+        <button id="uploadTravelersBtn" class="btn" type="button">Upload</button>
+      </div>
+      <p id="uploadStatus" class="wake-hint" hidden></p>
+    </section>
+
+    <p id="errorBanner" class="error" hidden></p>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

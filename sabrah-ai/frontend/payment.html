@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sabrah — Dummy Payment</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <main class="shell payment-shell">
+    <header class="brand">
+      <p class="eyebrow">Secure checkout (demo)</p>
+      <h1>Payment</h1>
+      <p class="tagline">Review full train details, then pay (demo — no real charge)</p>
+    </header>
+
+    <section class="payment-card" aria-label="Trip summary">
+      <h2 class="pay-section-title">Train details</h2>
+      <div class="pay-row">
+        <span>Route</span>
+        <strong id="routeLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Travel date</span>
+        <strong id="dateLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Train</span>
+        <strong id="trainLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Departure</span>
+        <strong id="departLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Arrival</span>
+        <strong id="arriveLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Duration</span>
+        <strong id="durationLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Class</span>
+        <strong id="classLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Platform</span>
+        <strong id="platformLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>From station</span>
+        <strong id="sourceStationLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>To station</span>
+        <strong id="destStationLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Seats</span>
+        <strong id="seatsLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Bus</span>
+        <strong id="busLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Hotel</span>
+        <strong id="hotelLabel">—</strong>
+      </div>
+    </section>
+
+    <section class="payment-card" aria-label="Passenger summary">
+      <h2 class="pay-section-title">Passenger details</h2>
+      <div class="pay-row">
+        <span>Passengers</span>
+        <strong id="passengerLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Count</span>
+        <strong id="countLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Phone</span>
+        <strong id="phoneLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Meal</span>
+        <strong id="mealLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Allergies</span>
+        <strong id="allergiesLabel">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Booking ID</span>
+        <strong id="bookingId">—</strong>
+      </div>
+      <div class="pay-row">
+        <span>Amount</span>
+        <strong id="amountLabel">—</strong>
+      </div>
+    </section>
+
+    <p id="payStatus" class="wake-hint">Demo checkout only. Click Pay now to simulate success.</p>
+    <p id="payError" class="error" hidden></p>
+
+    <section class="controls payment-actions">
+      <button id="payBtn" class="btn primary" type="button">Pay now</button>
+      <a class="btn ghost" href="/">Back to Sabrah</a>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      const get = (key, fallback = "—") => {
+        const value = (params.get(key) || "").trim();
+        return value || fallback;
+      };
+
+      const bookingId = get("booking_id", "DEMO-BOOKING");
+      const amountRaw = params.get("amount");
+      const currency = get("currency", "INR");
+      const amount =
+        amountRaw && !Number.isNaN(Number(amountRaw)) ? Number(amountRaw) : null;
+
+      const source = get("source", "");
+      const destination = get("destination", "");
+      const route =
+        source && destination ? `${source} → ${destination}` : get("route");
+
+      const trainName = get("train_name", "");
+      const trainId = get("train_id", "");
+      const trainLabel =
+        trainName && trainId && trainId !== "—"
+          ? `${trainName} (${trainId})`
+          : trainName || trainId || "—";
+
+      const passengers = get("passengers", "");
+      const passengerName = get("passenger_name", "");
+      const passengerLabel =
+        passengers && passengers !== "—"
+          ? passengers
+          : passengerName || "—";
+
+      document.getElementById("routeLabel").textContent = route;
+      document.getElementById("dateLabel").textContent = get("date");
+      document.getElementById("trainLabel").textContent = trainLabel;
+      document.getElementById("departLabel").textContent = get("depart");
+      document.getElementById("arriveLabel").textContent = get("arrive");
+      document.getElementById("durationLabel").textContent = get("duration");
+      document.getElementById("classLabel").textContent = get("travel_class");
+      document.getElementById("platformLabel").textContent = get("platform");
+      document.getElementById("sourceStationLabel").textContent = get("source_station");
+      document.getElementById("destStationLabel").textContent = get("destination_station");
+      document.getElementById("seatsLabel").textContent = get("seats");
+      document.getElementById("busLabel").textContent = get("bus_name");
+      document.getElementById("hotelLabel").textContent = get("hotel_name");
+      document.getElementById("passengerLabel").textContent = passengerLabel;
+      document.getElementById("countLabel").textContent = get("passenger_count");
+      document.getElementById("phoneLabel").textContent = get("phone");
+      document.getElementById("mealLabel").textContent = get("meal");
+      document.getElementById("allergiesLabel").textContent = get("allergies");
+      document.getElementById("bookingId").textContent = bookingId;
+      document.getElementById("amountLabel").textContent =
+        amount == null ? `${currency} —` : `${currency} ${amount.toFixed(0)}`;
+
+      const payBtn = document.getElementById("payBtn");
+      const payStatus = document.getElementById("payStatus");
+      const payError = document.getElementById("payError");
+
+      payBtn.addEventListener("click", () => {
+        payError.hidden = true;
+        payBtn.disabled = true;
+        payBtn.textContent = "Processing…";
+        setTimeout(() => {
+          const name = passengerLabel !== "—" ? passengerLabel : "passenger";
+          payStatus.textContent = `Payment successful (demo). ${name}'s booking ${bookingId} is confirmed.`;
+          payBtn.textContent = "Paid";
+        }, 900);
+      });
+    })();
+  </script>
+</body>
+</html>

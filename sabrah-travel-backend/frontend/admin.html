@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sabrah — Live Train Dashboard</title>
+  <style>
+    :root {
+      --bg: #10221f;
+      --panel: #f4efe6;
+      --ink: #10221f;
+      --accent: #c45c26;
+      --line: rgba(16, 34, 31, 0.12);
+      --ok: #1f7a4c;
+      --warn: #a15c12;
+      --bad: #a12a2a;
+      --info: #1d4f78;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse 70% 50% at 50% -10%, rgba(232, 160, 106, 0.28), transparent 55%),
+        linear-gradient(165deg, #0f2a2e, #1a4540 50%, #243d4a);
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+    .wrap {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+      background: var(--panel);
+      border-radius: 22px;
+      padding: 1.4rem 1.3rem 1.6rem;
+      box-shadow: 0 24px 60px rgba(8, 24, 22, 0.35);
+    }
+    h1 { margin: 0; font-size: 1.8rem; }
+    .sub { margin: 0.35rem 0 1.1rem; color: #4a5d58; }
+    .tabs { display: flex; gap: 0.45rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .tab {
+      border: 1px solid var(--line);
+      background: #fffdf9;
+      border-radius: 999px;
+      padding: 0.45rem 0.95rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    .tab.active { background: var(--accent); color: #fff8f2; border-color: transparent; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.55rem;
+      margin-bottom: 0.55rem;
+    }
+    label { display: block; font-size: 0.78rem; color: #4a5d58; margin-bottom: 0.2rem; }
+    input, button, select {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      padding: 0.65rem 0.7rem;
+      font: inherit;
+      background: #fffdf9;
+    }
+    button {
+      background: var(--accent);
+      color: #fff8f2;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.ghost {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    button.danger { background: #c23b3b; }
+    .actions { display: flex; gap: 0.5rem; margin: 0.8rem 0 1.2rem; flex-wrap: wrap; }
+    .actions button { width: auto; padding-inline: 1rem; }
+    .api {
+      display: flex; gap: 0.5rem; align-items: end; margin-bottom: 1rem; flex-wrap: wrap;
+    }
+    .api > div { flex: 1; min-width: 220px; }
+    .api button { width: auto; }
+    .msg { min-height: 1.2rem; color: #2f6b4f; font-size: 0.9rem; margin-bottom: 0.8rem; }
+    .msg.err { color: #7a1f1f; }
+    .route {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0.85rem;
+      margin-bottom: 0.75rem;
+      background: rgba(255,255,255,0.45);
+    }
+    .route h3 { margin: 0 0 0.55rem; font-size: 1.05rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.45rem 0.3rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: #5c6d68; font-weight: 600; font-size: 0.75rem; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.6rem;
+      margin-bottom: 1rem;
+    }
+    .card {
+      background: #fffdf9;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0.85rem;
+    }
+    .card .k { font-size: 0.75rem; color: #5c6d68; }
+    .card .v { font-size: 1.45rem; font-weight: 700; margin-top: 0.2rem; }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 0.15rem 0.55rem;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .AVAILABLE, .BOARDING, .on { background: #d9f2e4; color: var(--ok); }
+    .RAC, .SCHEDULED { background: #fff0d6; color: var(--warn); }
+    .WL, .RUNNING { background: #dceaf7; color: var(--info); }
+    .NOT_AVAILABLE, .ARRIVED, .off { background: #f7dede; color: var(--bad); }
+    .filters { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
+    .filters > * { width: auto; min-width: 140px; }
+    @media (max-width: 900px) {
+      .row, .cards { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Sabrah Train Dashboard</h1>
+    <p class="sub">Live status · seat inventory (CNF / RAC / WL) · catalog for Indore, Khandwa, Delhi, Pune, Mumbai, Noida, Burhanpur, Jalgaon, Nasik</p>
+
+    <div class="api">
+      <div>
+        <label for="apiKey">API key</label>
+        <input id="apiKey" type="password" value="local-development-key" />
+      </div>
+      <button id="reloadBtn" type="button">Refresh</button>
+      <button id="reloadCatalogBtn" class="ghost" type="button">Reload catalog file</button>
+    </div>
+    <p id="msg" class="msg"></p>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="live" type="button">Live status</button>
+      <button class="tab" data-tab="catalog" type="button">Train catalog</button>
+    </div>
+
+    <section id="panel-live" class="panel active">
+      <div class="cards" id="summaryCards"></div>
+      <div class="filters">
+        <input id="filterSource" placeholder="Filter source" />
+        <input id="filterDest" placeholder="Filter destination" />
+        <button id="applyFilter" type="button">Apply</button>
+        <button id="clearFilter" class="ghost" type="button">Clear</button>
+        <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.85rem;color:#4a5d58;">
+          <input id="autoRefresh" type="checkbox" checked style="width:auto" /> Auto 8s
+        </label>
+      </div>
+      <div class="route">
+        <table>
+          <thead>
+            <tr>
+              <th>Train</th><th>Route</th><th>Schedule</th><th>Live</th>
+              <th>Position</th><th>Seats</th><th>Message</th>
+            </tr>
+          </thead>
+          <tbody id="liveBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="panel-catalog" class="panel">
+      <h2 style="font-size:1.1rem;margin:0 0 0.6rem;">Add or update train</h2>
+      <div class="row">
+        <div><label>Source city</label><input id="source" placeholder="Indore" /></div>
+        <div><label>Destination city</label><input id="destination" placeholder="Mumbai" /></div>
+        <div><label>Train ID</label><input id="trainId" placeholder="TRAIN-IND-BOM-003" /></div>
+        <div><label>Train name</label><input id="trainName" placeholder="Avantika Express" /></div>
+      </div>
+      <div class="row">
+        <div><label>Depart (HH:MM)</label><input id="depart" placeholder="08:30" /></div>
+        <div><label>Arrive (HH:MM)</label><input id="arrive" placeholder="12:00" /></div>
+        <div><label>Duration</label><input id="duration" placeholder="3h 30m" /></div>
+        <div><label>Class</label><input id="travelClass" placeholder="3A" value="3A" /></div>
+      </div>
+      <div class="row">
+        <div><label>Price (INR)</label><input id="price" type="number" placeholder="500" /></div>
+        <div><label>CNF seats</label><input id="seats" type="number" placeholder="40" /></div>
+        <div><label>RAC seats</label><input id="rac" type="number" placeholder="8" value="0" /></div>
+        <div><label>Current WL</label><input id="wl" type="number" placeholder="0" value="0" /></div>
+      </div>
+      <div class="actions">
+        <button id="saveBtn" type="button">Save train</button>
+        <button id="clearBtn" class="ghost" type="button">Clear form</button>
+      </div>
+      <h2 style="font-size:1.1rem;margin:0 0 0.6rem;">Current routes</h2>
+      <div id="routes"></div>
+    </section>
+  </div>
+
+  <script>
+    const msg = document.getElementById("msg");
+    const routesEl = document.getElementById("routes");
+    const liveBody = document.getElementById("liveBody");
+    const summaryCards = document.getElementById("summaryCards");
+    let timer = null;
+
+    function apiKey() {
+      return document.getElementById("apiKey").value.trim();
+    }
+    function setMsg(text, isError = false) {
+      msg.textContent = text || "";
+      msg.className = "msg" + (isError ? " err" : "");
+    }
+    function headers() {
+      return {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey()}`,
+      };
+    }
+    function badge(text, cls) {
+      return `<span class="badge ${cls || text}">${text || "—"}</span>`;
+    }
+    function seatSummary(row) {
+      const status = String(row.availability_status || "").toUpperCase();
+      const cnf = row.available_seats ?? 0;
+      const rac = row.rac_seats ?? 0;
+      const wl = row.waiting_list ?? 0;
+      // If confirmed seats exist, only show CNF — hide RAC/WL (IRCTC-style UX).
+      if (status === "AVAILABLE") return `CNF ${cnf} available`;
+      if (status === "RAC") return `RAC ${rac} (no CNF)`;
+      if (status === "WL") return `WL ${wl} (no CNF/RAC)`;
+      if (status === "NOT_AVAILABLE") return "No seats";
+      return `CNF ${cnf}`;
+    }
+
+    document.querySelectorAll(".tab").forEach((btn) => {
+      btn.onclick = () => {
+        document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById(`panel-${btn.dataset.tab}`).classList.add("active");
+      };
+    });
+
+    function fillForm(source, destination, train) {
+      document.getElementById("source").value = source;
+      document.getElementById("destination").value = destination;
+      document.getElementById("trainId").value = train.id || "";
+      document.getElementById("trainName").value = train.name || "";
+      document.getElementById("depart").value = train.departure_time || "";
+      document.getElementById("arrive").value = train.arrival_time || "";
+      document.getElementById("duration").value = train.duration || "";
+      document.getElementById("travelClass").value = train.class || "3A";
+      document.getElementById("price").value = train.unit_price || "";
+      document.getElementById("seats").value = train.available_seats || 0;
+      document.getElementById("rac").value = train.rac_seats || 0;
+      document.getElementById("wl").value = train.waiting_list || 0;
+    }
+
+    async function loadLive() {
+      const source = document.getElementById("filterSource").value.trim();
+      const destination = document.getElementById("filterDest").value.trim();
+      const qs = new URLSearchParams();
+      if (source) qs.set("source", source);
+      if (destination) qs.set("destination", destination);
+      const res = await fetch(`/api/v1/admin/live-status?${qs}`, { headers: headers() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMsg(data.detail || "Failed to load live status", true);
+        return;
+      }
+      const s = data.summary || {};
+      summaryCards.innerHTML = [
+        ["Running", s.RUNNING || 0, "RUNNING"],
+        ["Boarding", s.BOARDING || 0, "BOARDING"],
+        ["Scheduled", s.SCHEDULED || 0, "SCHEDULED"],
+        ["CNF seats open", s.AVAILABLE || 0, "AVAILABLE"],
+        ["RAC only", s.RAC || 0, "RAC"],
+        ["Waitlist", s.WL || 0, "WL"],
+      ].map(([k, v, cls]) => `<div class="card"><div class="k">${k}</div><div class="v ${cls}" style="color:inherit">${v}</div></div>`).join("");
+
+      liveBody.innerHTML = "";
+      (data.trains || []).forEach((row) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><strong>${row.train_name || "—"}</strong><br/><span style="color:#5c6d68">${row.train_id || ""}</span></td>
+          <td>${row.source || ""} → ${row.destination || ""}</td>
+          <td>${row.departure_time || "—"} → ${row.arrival_time || "—"}<br/>${row.duration || ""}</td>
+          <td>${badge(row.live_status)}${row.delay_minutes ? `<div style="margin-top:0.25rem">+${row.delay_minutes}m</div>` : ""}</td>
+          <td>${row.current_station || "—"}<br/><span style="color:#5c6d68">${row.next_station ? "Next: " + row.next_station : ""}</span></td>
+          <td>${badge(row.availability_status)}<br/>${seatSummary(row)}</td>
+          <td>${row.status_message || row.availability_message || "—"}</td>
+        `;
+        liveBody.appendChild(tr);
+      });
+      setMsg(`Live dashboard · ${data.count || 0} trains · updated ${new Date().toLocaleTimeString()}`);
+    }
+
+    async function loadRoutes() {
+      const res = await fetch("/api/v1/admin/trains", { headers: headers() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMsg(data.detail || "Failed to load trains. Check API key.", true);
+        return;
+      }
+      routesEl.innerHTML = "";
+      if (!data.routes.length) {
+        routesEl.innerHTML = "<p>No routes yet.</p>";
+        return;
+      }
+      data.routes.forEach((route) => {
+        const box = document.createElement("section");
+        box.className = "route";
+        const title = document.createElement("h3");
+        title.textContent = `${route.source} → ${route.destination} (${route.train_count})`;
+        box.appendChild(title);
+        const table = document.createElement("table");
+        table.innerHTML = `
+          <thead>
+            <tr>
+              <th>ID</th><th>Name</th><th>Depart</th><th>Arrive</th>
+              <th>Class</th><th>Price</th><th>CNF</th><th>RAC</th><th>WL</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+        `;
+        const tbody = document.createElement("tbody");
+        route.trains.forEach((train) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${train.id}</td>
+            <td>${train.name}</td>
+            <td>${train.departure_time}</td>
+            <td>${train.arrival_time}</td>
+            <td>${train.class}</td>
+            <td>${train.unit_price}</td>
+            <td>${train.available_seats}</td>
+            <td>${train.rac_seats ?? 0}</td>
+            <td>${train.waiting_list ?? 0}</td>
+            <td>${badge(train.availability_status)}</td>
+            <td></td>
+          `;
+          const cell = tr.lastElementChild;
+          const edit = document.createElement("button");
+          edit.className = "ghost";
+          edit.textContent = "Edit";
+          edit.style.width = "auto";
+          edit.style.marginRight = "0.3rem";
+          edit.onclick = () => fillForm(route.source, route.destination, train);
+          const del = document.createElement("button");
+          del.className = "danger";
+          del.textContent = "Delete";
+          del.style.width = "auto";
+          del.onclick = async () => {
+            if (!confirm(`Delete ${train.id}?`)) return;
+            const url = `/api/v1/admin/trains/${encodeURIComponent(route.source)}/${encodeURIComponent(route.destination)}/${encodeURIComponent(train.id)}`;
+            const delRes = await fetch(url, { method: "DELETE", headers: headers() });
+            if (!delRes.ok) {
+              const err = await delRes.json().catch(() => ({}));
+              setMsg(err.detail || "Delete failed", true);
+              return;
+            }
+            await loadRoutes();
+            await loadLive();
+          };
+          cell.appendChild(edit);
+          cell.appendChild(del);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        box.appendChild(table);
+        routesEl.appendChild(box);
+      });
+    }
+
+    function setupAuto() {
+      if (timer) clearInterval(timer);
+      timer = null;
+      if (document.getElementById("autoRefresh").checked) {
+        timer = setInterval(() => {
+          loadLive().catch(() => {});
+        }, 8000);
+      }
+    }
+
+    document.getElementById("reloadBtn").onclick = async () => {
+      await loadLive();
+      await loadRoutes();
+    };
+    document.getElementById("reloadCatalogBtn").onclick = async () => {
+      const res = await fetch("/api/v1/admin/trains/reload", { method: "POST", headers: headers() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMsg(data.detail || "Reload failed", true);
+        return;
+      }
+      setMsg(`Catalog reloaded · ${data.routes} routes`);
+      await loadRoutes();
+      await loadLive();
+    };
+    document.getElementById("applyFilter").onclick = () => loadLive();
+    document.getElementById("clearFilter").onclick = () => {
+      document.getElementById("filterSource").value = "";
+      document.getElementById("filterDest").value = "";
+      loadLive();
+    };
+    document.getElementById("autoRefresh").onchange = setupAuto;
+    document.getElementById("clearBtn").onclick = () => {
+      ["source","destination","trainId","trainName","depart","arrive","duration","price","seats","rac","wl"].forEach((id) => {
+        document.getElementById(id).value = "";
+      });
+      document.getElementById("travelClass").value = "3A";
+      document.getElementById("rac").value = "0";
+      document.getElementById("wl").value = "0";
+    };
+    document.getElementById("saveBtn").onclick = async () => {
+      const body = {
+        source: document.getElementById("source").value.trim(),
+        destination: document.getElementById("destination").value.trim(),
+        id: document.getElementById("trainId").value.trim(),
+        name: document.getElementById("trainName").value.trim(),
+        departure_time: document.getElementById("depart").value.trim(),
+        arrival_time: document.getElementById("arrive").value.trim(),
+        duration: document.getElementById("duration").value.trim(),
+        class: document.getElementById("travelClass").value.trim() || "3A",
+        unit_price: Number(document.getElementById("price").value),
+        available_seats: Number(document.getElementById("seats").value),
+        rac_seats: Number(document.getElementById("rac").value || 0),
+        waiting_list: Number(document.getElementById("wl").value || 0),
+      };
+      const res = await fetch("/api/v1/admin/trains", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMsg(typeof data.detail === "string" ? data.detail : "Save failed", true);
+        return;
+      }
+      setMsg(`Saved ${data.train.id} on ${data.source} → ${data.destination}`);
+      await loadRoutes();
+      await loadLive();
+    };
+
+    Promise.all([loadLive(), loadRoutes()])
+      .then(setupAuto)
+      .catch((err) => setMsg(String(err), true));
+  </script>
+</body>
+</html>

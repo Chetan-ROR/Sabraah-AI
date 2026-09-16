@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sabrah Admin Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/admin.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">S</div>
+        <div>
+          <strong>SABRAH</strong>
+          <span>Admin Console</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <button type="button" class="nav-item" data-view="dashboard">
+          <span class="ico">▦</span> Dashboard
+        </button>
+        <button type="button" class="nav-item active" data-view="agents">
+          <span class="ico">◎</span> AI Agents
+        </button>
+        <button type="button" class="nav-item" data-view="conversations">
+          <span class="ico">💬</span> Conversations
+        </button>
+        <button type="button" class="nav-item" data-view="settings">
+          <span class="ico">⚙</span> Settings
+        </button>
+      </nav>
+      <a class="logout" href="/">← Voice UI</a>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <label class="search">
+          <span aria-hidden="true">⌕</span>
+          <input id="globalSearch" type="search" placeholder="Search agents, logs, or analytics..." />
+        </label>
+        <div class="top-actions">
+          <button type="button" class="icon-btn" title="Notifications">🔔</button>
+          <button type="button" class="icon-btn" title="Help">?</button>
+          <div class="user-chip">
+            <div>
+              <strong>ADMIN</strong>
+              <span class="online">Online</span>
+            </div>
+            <div class="avatar">A</div>
+          </div>
+        </div>
+      </header>
+
+      <!-- Agents -->
+      <section id="view-agents" class="view active">
+        <div class="agents-layout">
+          <div class="agents-list-panel">
+            <div class="panel-head">
+              <div>
+                <h1>Agents</h1>
+                <p>Manage and configure your agents</p>
+              </div>
+              <button id="addAgentBtn" type="button" class="btn yellow">+ ADD AGENT</button>
+            </div>
+            <p class="muted" id="agentCountLabel">All Agents (0)</p>
+            <div id="agentList" class="agent-list"></div>
+          </div>
+
+          <div class="agent-detail-panel" id="agentDetail">
+            <div class="empty-state">Select an agent to edit prompts</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Conversations -->
+      <section id="view-conversations" class="view">
+        <div class="conv-layout">
+          <div class="conv-list-panel">
+            <div class="synced"><span class="dot"></span> Synced</div>
+            <h2 id="convCountLabel">CONVERSATIONS (0)</h2>
+            <input id="convSearch" class="field" type="search" placeholder="Search conversations..." />
+            <div class="filters" id="convFilters">
+              <button type="button" class="chip active" data-filter="all">All</button>
+              <button type="button" class="chip" data-filter="unread">Unread</button>
+              <button type="button" class="chip" data-filter="booked">Booked</button>
+            </div>
+            <div class="new-test-row">
+              <select id="testAgentSelect" class="field"></select>
+              <button id="newTestBtn" type="button" class="btn yellow sm">+ Test</button>
+            </div>
+            <div id="convList" class="conv-list"></div>
+          </div>
+
+          <div class="chat-panel">
+            <div id="chatHeader" class="chat-header">
+              <div>
+                <strong id="chatName">Select a conversation</strong>
+                <span id="chatPhone" class="muted"></span>
+              </div>
+            </div>
+            <div id="chatThread" class="chat-thread">
+              <div class="empty-state">Start a test conversation from the left</div>
+            </div>
+            <form id="chatForm" class="chat-composer">
+              <input id="chatInput" type="text" placeholder="Type a reply..." autocomplete="off" disabled />
+              <button type="submit" class="send-btn" disabled title="Send">➤</button>
+            </form>
+          </div>
+
+          <aside class="details-panel">
+            <h3>Customer Details</h3>
+            <dl id="customerDetails" class="details-dl">
+              <div><dt>Name</dt><dd>—</dd></div>
+              <div><dt>Email</dt><dd>—</dd></div>
+              <div><dt>Phone</dt><dd>—</dd></div>
+            </dl>
+            <h3>Source</h3>
+            <p id="customerSource" class="muted">—</p>
+            <h3>Agent</h3>
+            <p id="customerAgent" class="muted">—</p>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Dashboard / Settings placeholders -->
+      <section id="view-dashboard" class="view">
+        <div class="placeholder-card">
+          <h1>Dashboard</h1>
+          <p>Use <strong>AI Agents</strong> to edit prompts, then <strong>Conversations</strong> to test them live.</p>
+          <button type="button" class="btn yellow" data-goto="agents">Open AI Agents</button>
+        </div>
+      </section>
+      <section id="view-settings" class="view">
+        <div class="placeholder-card">
+          <h1>Settings</h1>
+          <p>Agent prompts auto-save to <code>sabrah-ai/data/agents.json</code>.</p>
+          <p class="muted">Voice UI remains at <a href="/">/</a> · Admin at <a href="/admin">/admin</a></p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <dialog id="addAgentDialog">
+    <form method="dialog" id="addAgentForm" class="dialog-card">
+      <h2>Add Agent</h2>
+      <label>Name<input name="name" required class="field" placeholder="e.g. Refund Specialist" /></label>
+      <label>Description<input name="description" class="field" placeholder="Short role summary" /></label>
+      <label>First message<textarea name="first_message" class="field" rows="2" placeholder="Opening greeting"></textarea></label>
+      <label>System prompt<textarea name="system_prompt" class="field" rows="6" placeholder="Persona, goals, constraints..."></textarea></label>
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" id="cancelAddAgent">Cancel</button>
+        <button type="submit" class="btn yellow">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>
