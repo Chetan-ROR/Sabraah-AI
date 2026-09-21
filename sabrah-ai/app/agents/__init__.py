@@ -158,9 +158,11 @@ class ConversationAgent:
 
     @staticmethod
     def _maybe_set_booking_mode(session: SessionState, user_text: str) -> None:
+        mem = session.memory
+        if mem.selected_flight_id and mem.flow_step in {"flight_extras", "flight_open"}:
+            return
         ConversationAgent._ingest_trip_signals(session, user_text)
         text = user_text.lower()
-        mem = session.memory
 
         if "jain" in text:
             mem.meal_preference = "jain"
@@ -2823,6 +2825,9 @@ class ConversationAgent:
         if mem.user_goal == "book_hotel" or mem.booking_mode == "hotel":
             return await self._handle_hotel_flow(session, user_text, tools_used)
 
+        if mem.selected_flight_id and mem.flow_step in {"flight_extras", "flight_open"}:
+            return None
+
         # Trip discovery: route known, mode not chosen yet.
         if not mem.user_goal and mem.source and mem.destination:
             if self._looks_international(mem.destination):
@@ -4080,6 +4085,8 @@ class ConversationAgent:
             },
         )
 
+    _FLIGHT_EXTRA_KEYS = ("fares", "meals", "baggage", "addons")
+
     async def _handle_flight_pick(
         self, session: SessionState, user_text: str, tools_used: list[str]
     ) -> Optional[str]:
@@ -4131,21 +4138,286 @@ class ConversationAgent:
             {"item_type": "flight", "item_id": flight_id, "confirmed": True},
             result if isinstance(result, dict) else {},
         )
-        url = result.get("booking_url") if isinstance(result, dict) else None
+        priced = result if isinstance(result, dict) else {}
+        url = priced.get("booking_url")
         label = matched.get("name") or "that flight"
         price = matched.get("price_label") or ""
         price_bit = f" {price}." if price else "."
+        session.last_offerings["flight_priced"] = priced
         if url:
             session.last_offerings["flight_checkout"] = {"booking_url": url}
-            mem.flow_step = "flight_open"
-            return (
-                f"Got {label}.{price_bit} "
-                "I'm opening the flight checkout page so you can finish passenger details and payment."
-            )
-        return (
-            (result.get("message") if isinstance(result, dict) else None)
-            or f"Got {label}.{price_bit} Finish checkout on the Super Travel flights page."
+        mem.flow_step = "flight_extras"
+        session.last_offerings.pop("flights", None)
+        return self._prompt_next_flight_extra(
+            session, intro=f"Got {label}.{price_bit}"
         )
+
+    def _flight_fare_cards(self, session: SessionState) -> list[dict[str, Any]]:
+        priced = session.last_offerings.get("flight_priced") or {}
+        fares = priced.get("fare_types") if isinstance(priced, dict) else None
+        cards: list[dict[str, Any]] = []
+        for index, fare in enumerate(fares or [], 1):
+            if not isinstance(fare, dict):
+                continue
+            name = str(fare.get("name") or f"Fare {index}")
+            cards.append(
+                {
+                    "id": name,
+                    "name": name,
+                    "price_label": fare.get("total_label") or "",
+                }
+            )
+        return cards
+
+    def _selected_fare_ssr(self, session: SessionState) -> list[dict[str, Any]]:
+        priced = session.last_offerings.get("flight_priced") or {}
+        fares = priced.get("fare_types") if isinstance(priced, dict) else None
+        if not isinstance(fares, list):
+            return []
+        chosen = None
+        needle = (session.memory.flight_fare_name or "").strip().lower()
+        if needle:
+            for fare in fares:
+                if not isinstance(fare, dict):
+                    continue
+                name = str(fare.get("name") or "").strip().lower()
+                if name == needle or needle in name or name in needle:
+                    chosen = fare
+                    break
+        if chosen is None:
+            first = fares[0] if fares else None
+            chosen = first if isinstance(first, dict) else None
+        if not chosen:
+            return []
+        return [opt for opt in (chosen.get("ssr_options") or []) if isinstance(opt, dict)]
+
+    def _flight_ssr_cards(
+        self, session: SessionState, kinds: set[str]
+    ) -> list[dict[str, Any]]:
+        cards: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for opt in self._selected_fare_ssr(session):
+            category = str(opt.get("category") or "").lower()
+            if category not in kinds:
+                continue
+            title = str(opt.get("title") or opt.get("code") or "").strip()
+            code = str(opt.get("code") or "").upper()
+            if not title or title.lower() in seen:
+                continue
+            if "bundle" in title.lower() or code == "LTCP":
+                continue
+            seen.add(title.lower())
+            cards.append(
+                {
+                    "id": str(opt.get("id") or opt.get("code") or title),
+                    "name": title,
+                    "price_label": opt.get("price_label") or "",
+                    "category": category,
+                }
+            )
+        return cards[:12]
+
+    def _show_flight_extra_cards(
+        self, session: SessionState, key: str, cards: list[dict[str, Any]]
+    ) -> None:
+        for item in self._FLIGHT_EXTRA_KEYS:
+            session.last_offerings.pop(item, None)
+        session.last_offerings.pop("flights", None)
+        session.last_offerings[key] = cards
+
+    def _pending_flight_extra(self, session: SessionState) -> Optional[str]:
+        mem = session.memory
+        fares = self._flight_fare_cards(session)
+        if not mem.flight_fare_name:
+            if len(fares) > 1:
+                return "fare"
+            if fares:
+                mem.flight_fare_name = str(fares[0].get("name") or "Fare")
+        meals = self._flight_ssr_cards(session, {"meal"})
+        if mem.extra_meal is None and meals:
+            return "meal"
+        bags = self._flight_ssr_cards(session, {"baggage", "priority_baggage"})
+        if mem.extra_baggage is None and bags:
+            return "baggage"
+        checkin = self._flight_ssr_cards(session, {"priority_checkin"})
+        if mem.extra_checkin is None and checkin:
+            return "checkin"
+        return None
+
+    @staticmethod
+    def _wants_skip_flight_extra(user_text: str) -> bool:
+        text = (user_text or "").strip().lower()
+        if text in {"no", "nope", "nah", "skip", "none", "pass", "later"}:
+            return True
+        return bool(
+            re.search(
+                r"\b(skip|no thanks|no thank you|not now|no extra|no meal|no food|"
+                r"no baggage|no bag|no check[- ]?in|don't want|do not want|without)\b",
+                text,
+            )
+        )
+
+    def _match_flight_extra(
+        self, user_text: str, rows: list[dict[str, Any]]
+    ) -> Optional[dict[str, Any]]:
+        text = (user_text or "").strip().lower()
+        if not text or not rows:
+            return None
+        kg = re.search(r"\b(\d+)\s*kgs?\b", text)
+        if kg:
+            needle = kg.group(1)
+            hits = [
+                row
+                for row in rows
+                if re.search(
+                    rf"\b{re.escape(needle)}\s*kgs?\b",
+                    str(row.get("name") or "").lower(),
+                )
+            ]
+            if len(hits) == 1:
+                return hits[0]
+        for row in rows:
+            name = str(row.get("name") or "").lower()
+            if name and (name == text or name in text or text in name):
+                return row
+        return self._match_option(user_text, rows)
+
+    def _open_flight_checkout(self, session: SessionState, prefix: str = "") -> str:
+        mem = session.memory
+        mem.flow_step = "flight_open"
+        for key in self._FLIGHT_EXTRA_KEYS:
+            session.last_offerings.pop(key, None)
+        session.booking_details["flight_extras"] = {
+            "fare": mem.flight_fare_name,
+            "meal": mem.extra_meal,
+            "baggage": mem.extra_baggage,
+            "priority_checkin": mem.extra_checkin,
+        }
+        bits: list[str] = []
+        if mem.flight_fare_name:
+            bits.append(mem.flight_fare_name)
+        if mem.extra_meal and mem.extra_meal != "skip":
+            bits.append(mem.extra_meal)
+        if mem.extra_baggage and mem.extra_baggage != "skip":
+            bits.append(mem.extra_baggage)
+        if mem.extra_checkin and mem.extra_checkin != "skip":
+            bits.append("priority check-in")
+        extras = f" Noted: {', '.join(bits)}." if bits else ""
+        lead = f"{prefix.strip()} " if prefix and prefix.strip() else ""
+        checkout = session.last_offerings.get("flight_checkout") or {}
+        url = checkout.get("booking_url") if isinstance(checkout, dict) else None
+        if url:
+            return (
+                f"{lead}I'm opening the flight checkout page so you can finish "
+                f"passenger details and payment.{extras}"
+            ).strip()
+        return (
+            f"{lead}Finish passenger details and payment on the Super Travel flights page.{extras}"
+        ).strip()
+
+    def _prompt_next_flight_extra(
+        self, session: SessionState, intro: str = ""
+    ) -> str:
+        session.memory.flow_step = "flight_extras"
+        pending = self._pending_flight_extra(session)
+        lead = f"{intro.strip()} " if intro and intro.strip() else ""
+        if pending is None:
+            return self._open_flight_checkout(session, prefix=intro)
+        if pending == "fare":
+            cards = self._flight_fare_cards(session)
+            self._show_flight_extra_cards(session, "fares", cards)
+            names = ", ".join(
+                f"{card['name']}"
+                + (f" {card['price_label']}" if card.get("price_label") else "")
+                for card in cards[:4]
+            )
+            default = cards[0]["name"] if cards else "the searched fare"
+            return (
+                f"{lead}Select a fare type: {names}. "
+                f"Or say skip to keep {default}."
+            ).strip()
+        if pending == "meal":
+            cards = self._flight_ssr_cards(session, {"meal"})
+            self._show_flight_extra_cards(session, "meals", cards)
+            return f"{lead}Meals are on your screen. Which one, or say no meal?".strip()
+        if pending == "baggage":
+            cards = self._flight_ssr_cards(session, {"baggage", "priority_baggage"})
+            self._show_flight_extra_cards(session, "baggage", cards)
+            return (
+                f"{lead}Extra baggage options are on your screen. Which one, or say skip?"
+            ).strip()
+        cards = self._flight_ssr_cards(session, {"priority_checkin"})
+        self._show_flight_extra_cards(session, "addons", cards)
+        price = cards[0].get("price_label") if cards else ""
+        price_bit = f" for {price}" if price else ""
+        return (
+            f"{lead}Priority check-in is available{price_bit}. Add it, or say skip?"
+        ).strip()
+
+    async def _handle_flight_extras(
+        self, session: SessionState, user_text: str
+    ) -> Optional[str]:
+        mem = session.memory
+        if not mem.selected_flight_id:
+            return None
+        if mem.flow_step == "flight_open":
+            return None
+        priced = session.last_offerings.get("flight_priced")
+        if not isinstance(priced, dict):
+            return None
+        pending = self._pending_flight_extra(session)
+        if pending is None:
+            return self._open_flight_checkout(session)
+
+        kind_cards = {
+            "fare": ("fares", self._flight_fare_cards(session)),
+            "meal": ("meals", self._flight_ssr_cards(session, {"meal"})),
+            "baggage": (
+                "baggage",
+                self._flight_ssr_cards(session, {"baggage", "priority_baggage"}),
+            ),
+            "checkin": ("addons", self._flight_ssr_cards(session, {"priority_checkin"})),
+        }
+        offering_key, cards = kind_cards[pending]
+        self._show_flight_extra_cards(session, offering_key, cards)
+
+        if self._wants_skip_flight_extra(user_text):
+            if pending == "fare":
+                mem.flight_fare_name = str((cards[0] or {}).get("name") or "Fare") if cards else "Fare"
+            elif pending == "meal":
+                mem.extra_meal = "skip"
+            elif pending == "baggage":
+                mem.extra_baggage = "skip"
+            else:
+                mem.extra_checkin = "skip"
+            return self._prompt_next_flight_extra(session)
+
+        matched = self._match_flight_extra(user_text, cards)
+        if matched is None and pending == "checkin":
+            text = (user_text or "").strip().lower()
+            if self._user_said_yes(user_text) or re.search(
+                r"\b(add|priority)\b", text
+            ):
+                matched = cards[0] if cards else None
+        if matched is None:
+            if pending == "fare":
+                return "Please pick a fare type on your screen, or say skip."
+            if pending == "meal":
+                return "Please pick a meal on your screen, or say no meal."
+            if pending == "baggage":
+                return "Please pick extra baggage on your screen, or say skip."
+            return "Say add for priority check-in, or skip."
+
+        choice = str(matched.get("name") or "").strip()
+        if pending == "fare":
+            mem.flight_fare_name = choice or mem.flight_fare_name
+        elif pending == "meal":
+            mem.extra_meal = choice or "skip"
+        elif pending == "baggage":
+            mem.extra_baggage = choice or "skip"
+        else:
+            mem.extra_checkin = choice or "skip"
+        return self._prompt_next_flight_extra(session)
 
     async def _handle_sequential_choice(
         self, session: SessionState, user_text: str, tools_used: list[str]

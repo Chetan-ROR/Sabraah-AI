@@ -78,7 +78,11 @@ class FakeTTS:
 
 class FakeTravelClient(TravelBackendClient):
     def __init__(self) -> None:
-        super().__init__(base_url="http://travel.test", api_key="test-api-key")
+        super().__init__(
+            base_url="http://travel.test",
+            api_key="test-api-key",
+            web_app_base_url="http://127.0.0.1:3000",
+        )
         self.calls: List[Tuple[str, str, Optional[dict]]] = []
         self.available = True
         self.raise_unavailable = False
@@ -142,15 +146,67 @@ class FakeTravelClient(TravelBackendClient):
                 ],
             }
         if path == "/api/v1/flights/fare-group-details":
+            ssr_options = [
+                {
+                    "category": "meal",
+                    "title": "Veg Meal (For Retail Fare)",
+                    "price_label": "₹400",
+                    "code": "VGML",
+                },
+                {
+                    "category": "meal",
+                    "title": "Paneer Tikka Sandwich Combo",
+                    "price_label": "₹500",
+                    "code": "PTSC",
+                },
+                {
+                    "category": "priority_checkin",
+                    "title": "Priority Check-In",
+                    "price_label": "₹430",
+                    "code": "PRIO",
+                },
+                {
+                    "category": "baggage",
+                    "title": "Prepaid Excess Baggage – 3 Kg",
+                    "price_label": "₹2,247",
+                    "code": "XB3",
+                },
+                {
+                    "category": "baggage",
+                    "title": "Prepaid Excess Baggage – 5 Kg",
+                    "price_label": "₹3,478",
+                    "code": "XB5",
+                },
+            ]
             return {
                 "fare_types": [
                     {
                         "priced_tui": "priced-test",
+                        "fare_name": "SAVER",
                         "fare_summary": {
-                            "total": "5732.0",
-                            "total_label": "₹5,732",
+                            "total": "5898.0",
+                            "total_label": "₹5,898",
                         },
-                    }
+                        "ssr_options": ssr_options,
+                    },
+                    {
+                        "priced_tui": "priced-flexi",
+                        "fare_name": "FLEXI PLUS FARE",
+                        "fare_summary": {
+                            "total": "6394.0",
+                            "total_label": "₹6,394",
+                        },
+                        "ssr_options": ssr_options,
+                    },
+                    {
+                        "priced_tui": "priced-super",
+                        "fare_name": "SUPER FARE",
+                        "fare_summary": {
+                            "total": "7548.0",
+                            "total_label": "₹7,548",
+                        },
+                        "ssr_options": ssr_options,
+                    },
                 ]
             }
         if path == "/api/v1/bookings" and method == "POST":
@@ -687,6 +743,90 @@ def test_guided_flight_search_not_trains(client) -> None:
         for _, path, _ in stack["travel"].calls
     )
     assert data["offerings"].get("flights")
+
+
+def test_guided_flight_asks_fare_and_extras(client) -> None:
+    test_client, stack = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Hi Sabrah"},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "I want to book a flight."},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={
+            "session_id": session,
+            "message": "I want to go from Indore to Delhi via flight.",
+        },
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Tomorrow."},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "One passenger."},
+    )
+    found = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Other."},
+    )
+    assert found.json()["offerings"].get("flights")
+
+    pick = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Option 1"},
+    )
+    pick_data = pick.json()
+    pick_text = pick_data["assistant_text"].lower()
+    assert "fare" in pick_text
+    assert "opening" not in pick_text
+    assert pick_data.get("open_booking") is not True
+    assert pick_data["offerings"].get("fares")
+    assert any(path == "/api/v1/flights/fare-group-details" for _, path, _ in stack["travel"].calls)
+
+    fare = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Saver"},
+    )
+    fare_text = fare.json()["assistant_text"].lower()
+    assert "meal" in fare_text
+    assert fare.json()["offerings"].get("meals")
+    assert fare.json().get("open_booking") is not True
+
+    meal = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "no meal"},
+    )
+    meal_text = meal.json()["assistant_text"].lower()
+    assert "baggage" in meal_text
+    assert meal.json()["offerings"].get("baggage")
+
+    bag = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "5 kg"},
+    )
+    bag_text = bag.json()["assistant_text"].lower()
+    assert "check" in bag_text
+    assert bag.json()["offerings"].get("addons")
+
+    done = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "skip"},
+    )
+    done_data = done.json()
+    done_text = done_data["assistant_text"].lower()
+    assert "opening" in done_text or "checkout" in done_text
+    assert done_data.get("open_booking") is True
+    extras = (done_data.get("booking_details") or {}).get("flight_extras") or {}
+    assert extras.get("fare") == "SAVER"
+    assert extras.get("meal") == "skip"
+    assert "5" in str(extras.get("baggage") or "")
+    assert extras.get("priority_checkin") == "skip"
 
 
 def test_frontend_loads(client) -> None:

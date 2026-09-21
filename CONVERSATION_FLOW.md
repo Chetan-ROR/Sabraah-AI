@@ -71,7 +71,7 @@ Sabraah invites the trip. Then either dump the trip in one line, or pick a modul
 
 ## 2. Flights
 
-**For:** plane tickets on Super Travel (search → pick → checkout page). Card is **not** charged in voice.
+**For:** plane tickets on Super Travel (search → pick → fare/extras → checkout page). Card is **not** charged in voice.
 
 **How — shortest path:**
 
@@ -82,7 +82,13 @@ Sabraah invites the trip. Then either dump the trip in one line, or pick a modul
 | 3 | `Tomorrow` or `20 September 2026` | WHEN |
 | 4 | `One passenger` / `two adults and one child` | WHO |
 | 5 | `Leisure` / `business` / `wedding` / `other` | WHY (skipped if you already said family/business) |
-| 6 | Screen shows flights → `Option 1` | Pick. Checkout can open |
+| 6 | Screen shows flights → `Option 1` | Pick the flight |
+| 7 | `Saver` / `Flexi` / `Super`, or `skip` | Fare type — only if that airline returned more than one |
+| 8 | `Veg meal` / `no meal` | Paid meals — only if that fare has them |
+| 9 | `5 kg extra bag` / `skip` | Extra baggage — only if offered on that fare |
+| 10 | `Priority check-in` / `skip` | Only if that fare has priority check-in |
+
+Then checkout opens so you can finish passenger details and payment. Sabraah asks **only** extras that Super Travel actually returned for that fare (same list as Fare Details / Extra Services). If a fare has no meals or bags, she will not invent them.
 
 **Natural one-liners (preferred):**
 
