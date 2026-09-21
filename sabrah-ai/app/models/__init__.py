@@ -44,7 +44,10 @@ class TravelSlotMemory(BaseModel):
     avoid_early_departure: Optional[bool] = None
     travel_pace: Optional[str] = None
     accessibility_needed: Optional[bool] = None
-    hotel_area: Optional[str] = None
+    extra_meal: Optional[str] = None
+    extra_baggage: Optional[str] = None
+    extra_checkin: Optional[str] = None
+    flight_fare_name: Optional[str] = None
     # book_train | book_flight | book_event | cancel | refund | charter | (legacy support)
     user_goal: Optional[str] = None
     # welcome | goal | where | why | when | passengers | search | ...

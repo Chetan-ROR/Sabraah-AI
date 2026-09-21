@@ -4168,7 +4168,10 @@ class ConversationAgent:
             or mem.transport_type == "flight"
             or mem.booking_mode == "flight"
         ):
-            return await self._handle_flight_pick(session, user_text, tools_used)
+            picked = await self._handle_flight_pick(session, user_text, tools_used)
+            if picked is not None:
+                return picked
+            return await self._handle_flight_extras(session, user_text)
         total = self._needed_passenger_count(session)
         # Ready for confirm → leave to _handle_booking_confirm on "yes"
         if (

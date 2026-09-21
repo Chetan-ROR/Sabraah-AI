@@ -1126,6 +1126,36 @@ class TravelToolExecutor:
             fare_types = priced.get("fare_types") or []
             first = fare_types[0] if fare_types and isinstance(fare_types[0], dict) else priced
             summary = first.get("fare_summary") if isinstance(first, dict) else {}
+            fare_cards: list[dict[str, Any]] = []
+            for fare in fare_types:
+                if not isinstance(fare, dict):
+                    continue
+                extras = []
+                for opt in fare.get("ssr_options") or []:
+                    if not isinstance(opt, dict):
+                        continue
+                    extras.append(
+                        {
+                            "category": str(opt.get("category") or ""),
+                            "title": str(opt.get("title") or opt.get("code") or "Add-on"),
+                            "price": opt.get("price") or "",
+                            "price_label": opt.get("price_label") or "",
+                            "code": str(opt.get("code") or ""),
+                            "id": str(
+                                opt.get("id")
+                                or (opt.get("selection") or {}).get("id")
+                                or ""
+                            ),
+                        }
+                    )
+                fare_cards.append(
+                    {
+                        "name": str(fare.get("fare_name") or fare.get("name") or "Fare"),
+                        "total_label": (fare.get("fare_summary") or {}).get("total_label")
+                        or fare.get("total_label"),
+                        "ssr_options": extras[:16],
+                    }
+                )
             return {
                 "status": "priced",
                 "item_type": "flight",
@@ -1133,10 +1163,11 @@ class TravelToolExecutor:
                 "fare_summary": summary,
                 "priced_tui": first.get("priced_tui") if isinstance(first, dict) else None,
                 "total": (summary or {}).get("total_label") or first.get("total_label"),
+                "fare_types": fare_cards,
                 "booking_url": booking_url,
                 "payment_url": booking_url,
                 "message": (
-                    "Live fare is locked. Complete passenger details and payment "
+                    "Live fare is locked. Complete extras, passenger details and payment "
                     "on Super Travel — voice cannot charge the card."
                 ),
             }
