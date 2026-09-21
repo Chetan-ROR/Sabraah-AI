@@ -137,10 +137,14 @@ class TravelService:
             departure_date=request.departure_date,
             passengers=request.passengers,
             travel_class=request.travel_class,
+            return_date=request.return_date,
         )
+        provider_name = "MOCK"
+        if results:
+            provider_name = str(getattr(results[0], "provider", None) or "MOCK")
         return SearchResponse(
             results=[r.model_dump() for r in results],
-            provider="MOCK",
+            provider=provider_name,
             count=len(results),
         )
 

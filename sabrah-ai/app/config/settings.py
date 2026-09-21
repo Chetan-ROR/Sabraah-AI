@@ -31,15 +31,27 @@ class Settings(BaseSettings):
     )
 
     travel_backend_base_url: str = Field(
-        default="http://127.0.0.1:8001", alias="TRAVEL_BACKEND_BASE_URL"
+        default="http://127.0.0.1:8002", alias="TRAVEL_BACKEND_BASE_URL"
     )
     travel_backend_api_key: str = Field(default="", alias="TRAVEL_BACKEND_API_KEY")
+    travel_backend_timeout_seconds: float = Field(
+        default=90.0, alias="TRAVEL_BACKEND_TIMEOUT_SECONDS"
+    )
+    super_travel_api_base_url: str = Field(
+        default="http://127.0.0.1:8002", alias="SUPER_TRAVEL_API_BASE_URL"
+    )
+    super_travel_timeout_seconds: float = Field(
+        default=20.0, alias="SUPER_TRAVEL_TIMEOUT_SECONDS"
+    )
+    web_app_base_url: str = Field(default="", alias="WEB_APP_BASE_URL")
 
     session_ttl_minutes: int = Field(default=60, alias="SESSION_TTL_MINUTES")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     tts_provider: str = Field(default="elevenlabs", alias="TTS_PROVIDER")
 
-    @field_validator("travel_backend_base_url")
+    @field_validator(
+        "travel_backend_base_url", "super_travel_api_base_url", "web_app_base_url"
+    )
     @classmethod
     def strip_trailing_slash(cls, value: str) -> str:
         return value.rstrip("/")
@@ -48,8 +60,6 @@ class Settings(BaseSettings):
         missing: list[str] = []
         if not self.openai_api_key.strip():
             missing.append("OPENAI_API_KEY")
-        if not self.travel_backend_api_key.strip():
-            missing.append("TRAVEL_BACKEND_API_KEY")
         if self.tts_provider == "elevenlabs":
             if not self.elevenlabs_api_key.strip():
                 missing.append("ELEVENLABS_API_KEY")

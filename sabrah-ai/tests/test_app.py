@@ -89,19 +89,28 @@ class FakeTravelClient(TravelBackendClient):
         path: str,
         *,
         json: Optional[dict] = None,
+        params: Optional[dict] = None,
         session_id: Optional[str] = None,
+        user_access_token: Optional[str] = None,
+        unwrap: bool = True,
     ) -> dict:
-        self.calls.append((method, path, json))
+        self.calls.append((method, path, json or params))
         if self.raise_unavailable:
             raise TravelBackendError("down", code="travel_unavailable")
-        if path == "/api/v1/trains/search":
+        if path in {"/api/v1/trains/search", "/api/v1/trains/train-list/"}:
+            origin = (json or params or {}).get("source") or (params or {}).get("origin")
+            dest = (json or params or {}).get("destination") or (params or {}).get(
+                "destination"
+            )
             return {
                 "results": [
                     {
                         "id": "TRAIN-001",
                         "name": "Rajdhani Express",
-                        "source": json["source"],
-                        "destination": json["destination"],
+                        "train_name": "Rajdhani Express",
+                        "train_number": "TRAIN-001",
+                        "source": origin or "Delhi",
+                        "destination": dest or "Mumbai",
                         "departure_time": "16:55",
                         "price": 1850,
                         "currency": "INR",
@@ -109,6 +118,40 @@ class FakeTravelClient(TravelBackendClient):
                 ],
                 "provider": "MOCK",
                 "count": 1,
+            }
+        if path == "/api/v1/flights/search":
+            return {
+                "tui": "tui-test",
+                "flights": [
+                    {
+                        "index": "6E|2",
+                        "airline_name": "IndiGo",
+                        "flight_number": "6E 2345",
+                        "departure_time": "06:10",
+                        "arrival_time": "08:25",
+                        "duration": "02h 15m",
+                        "price": "5732.0",
+                        "price_label": "₹5,732",
+                        "selection": {
+                            "index": "6E|2",
+                            "order_id": 1,
+                            "amount": "5632.0",
+                            "tui": "tui-test",
+                        },
+                    }
+                ],
+            }
+        if path == "/api/v1/flights/fare-group-details":
+            return {
+                "fare_types": [
+                    {
+                        "priced_tui": "priced-test",
+                        "fare_summary": {
+                            "total": "5732.0",
+                            "total_label": "₹5,732",
+                        },
+                    }
+                ]
             }
         if path == "/api/v1/bookings" and method == "POST":
             if not (json or {}).get("confirmed"):
@@ -295,18 +338,37 @@ def test_conversation_memory(client) -> None:
 def test_text_chat_basic(client) -> None:
     test_client, stack = client
     session = test_client.post("/api/v1/sessions").json()["session_id"]
-    stack["llm"].enqueue(
-        SimpleNamespace(content="Hi! How can I help you today?", tool_calls=None)
-    )
     response = test_client.post(
         "/api/v1/chat/text",
         json={"session_id": session, "message": "Hi Sabrah"},
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["assistant_text"].startswith("Hi!")
+    assert "Tell me the trip" in data["assistant_text"] or "flight" in data["assistant_text"].lower()
     assert data["audio_base64"] == base64.b64encode(b"FAKEMP3").decode("ascii")
     assert stack["tts"].texts
+
+
+def test_general_chat_reaches_llm(client) -> None:
+    test_client, stack = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Hi Sabrah"},
+    )
+    stack["llm"].enqueue(
+        SimpleNamespace(
+            content="I'm doing well. I can help with trains, events, cancel, or refunds.",
+            tool_calls=None,
+        )
+    )
+    response = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "How are you today?"},
+    )
+    assert response.status_code == 200
+    assert "doing well" in response.json()["assistant_text"]
+    assert stack["llm"].calls
 
 
 def test_openai_provider_mocked_via_agent(client) -> None:
@@ -315,7 +377,7 @@ def test_openai_provider_mocked_via_agent(client) -> None:
     stack["llm"].enqueue(SimpleNamespace(content="Understood.", tool_calls=None))
     response = test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hello"},
+        json={"session_id": session, "message": "How are you today?"},
     )
     assert response.status_code == 200
     assert len(stack["llm"].calls) == 1
@@ -328,7 +390,7 @@ def test_elevenlabs_failure_still_returns_text(client) -> None:
     stack["llm"].enqueue(SimpleNamespace(content="Text only reply", tool_calls=None))
     response = test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi"},
+        json={"session_id": session, "message": "How are you today?"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -372,7 +434,7 @@ def test_tool_calling_search_trains(client) -> None:
     data = response.json()
     assert "search_trains" in data["tools_used"]
     assert stack["travel"].calls
-    assert stack["travel"].calls[0][1] == "/api/v1/trains/search"
+    assert stack["travel"].calls[0][1] == "/api/v1/trains/train-list/"
     assert data["memory"]["source"] == "Delhi"
     assert data["memory"]["destination"] == "Mumbai"
 
@@ -453,10 +515,20 @@ def test_booking_with_confirmation(client) -> None:
                 _tool_call(
                     "create_booking",
                     {
-                        "item_type": "train",
-                        "item_id": "TRAIN-001",
+                        "item_type": "flight",
+                        "item_id": "6E|2",
                         "passenger_name": "Asha",
                         "confirmed": True,
+                        "metadata": {
+                            "from_code": "DEL",
+                            "to_code": "BOM",
+                            "selection": {
+                                "index": "6E|2",
+                                "order_id": 1,
+                                "amount": "5632.0",
+                                "tui": "tui-test",
+                            },
+                        },
                     },
                 )
             ],
@@ -464,7 +536,7 @@ def test_booking_with_confirmation(client) -> None:
     )
     stack["llm"].enqueue(
         SimpleNamespace(
-            content="Your booking BK-TEST123 is confirmed.",
+            content="Your live fare is locked. Complete payment on Super Travel.",
             tool_calls=None,
         )
     )
@@ -473,8 +545,8 @@ def test_booking_with_confirmation(client) -> None:
         json={"session_id": session, "message": "Yes, please book it"},
     )
     assert response.status_code == 200
-    assert any(path == "/api/v1/bookings" for _, path, _ in stack["travel"].calls)
-    assert "BK-TEST123" in response.json()["assistant_text"]
+    assert any(path == "/api/v1/flights/fare-group-details" for _, path, _ in stack["travel"].calls)
+    assert "locked" in response.json()["assistant_text"].lower()
 
 
 def test_cancellation_confirmation(client) -> None:
@@ -508,7 +580,7 @@ def test_cancellation_confirmation(client) -> None:
 def test_voice_endpoint(client) -> None:
     test_client, stack = client
     session = test_client.post("/api/v1/sessions").json()["session_id"]
-    stack["stt"].text = "Hi Sabrah"
+    stack["stt"].text = "I want to go to Mumbai"
     stack["llm"].enqueue(
         SimpleNamespace(content="Hi! How can I help you today?", tool_calls=None)
     )
@@ -518,7 +590,103 @@ def test_voice_endpoint(client) -> None:
         files={"audio": ("speech.webm", b"fake-audio-bytes", "audio/webm")},
     )
     assert response.status_code == 200
-    assert response.json()["user_text"] == "Hi Sabrah"
+    assert response.json()["user_text"] == "I want to go to Mumbai"
+
+
+def test_voice_empty_transcript_is_ignored(client) -> None:
+    test_client, stack = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+
+    async def transcribe(_audio_bytes, filename="audio.webm"):
+        raise ProviderError("I could not catch that.", code="speech_not_recognized")
+
+    stack["stt"].transcribe = transcribe
+    response = test_client.post(
+        "/api/v1/chat/voice",
+        data={"session_id": session},
+        files={"audio": ("speech.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+    assert response.status_code == 200
+    assert response.json()["ignored"] is True
+
+
+def test_voice_stt_prompt_leak_is_ignored(client) -> None:
+    test_client, stack = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    stack["stt"].text = "Cities, dates, trains, hotels, passengers, options."
+    response = test_client.post(
+        "/api/v1/chat/voice",
+        data={"session_id": session},
+        files={"audio": ("speech.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ignored"] is True
+    assert data["user_text"] == ""
+    assert data["assistant_text"] == ""
+
+
+def test_voice_wake_phrase_greets(client) -> None:
+    test_client, stack = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    stack["stt"].text = "Hey Sabraah"
+    response = test_client.post(
+        "/api/v1/chat/voice",
+        data={"session_id": session},
+        files={"audio": ("speech.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("ignored") is not True
+    assert "sabrah" in data["assistant_text"].lower()
+    assert "flight" in data["assistant_text"].lower()
+
+
+def test_guided_flight_search_not_trains(client) -> None:
+    test_client, stack = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    greet = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Hi Sabrah"},
+    )
+    assert "flight" in greet.json()["assistant_text"].lower()
+    where = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "I want to book a flight."},
+    )
+    assert "where" in where.json()["assistant_text"].lower()
+    when = test_client.post(
+        "/api/v1/chat/text",
+        json={
+            "session_id": session,
+            "message": "I want to go from Indore to Delhi via flight.",
+        },
+    )
+    assert "Indore" in when.json()["assistant_text"]
+    assert "Delhi" in when.json()["assistant_text"]
+    assert "Via Flight" not in when.json()["assistant_text"]
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Tomorrow."},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "One passenger."},
+    )
+    found = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Other."},
+    )
+    data = found.json()
+    assert found.status_code == 200
+    assert "flight" in data["assistant_text"].lower()
+    assert "train" not in data["assistant_text"].lower()
+    assert any(path == "/api/v1/flights/search" for _, path, _ in stack["travel"].calls)
+    assert not any(
+        path in {"/api/v1/trains/search", "/api/v1/trains/train-list/"}
+        for _, path, _ in stack["travel"].calls
+    )
+    assert data["offerings"].get("flights")
 
 
 def test_frontend_loads(client) -> None:

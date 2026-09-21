@@ -9,7 +9,8 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Union
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.services.travel_client import TravelBackendClient, TravelBackendError
+from app.services.events_client import SuperTravelEventsClient
+from app.services.travel_client import CABIN_MAP, TravelBackendClient, TravelBackendError
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,17 @@ class SearchLocalTransportArgs(BaseModel):
     pickup: Optional[str] = None
     dropoff: Optional[str] = None
     transport_type: Optional[str] = None
+
+
+class SearchEventsArgs(BaseModel):
+    search: Optional[str] = None
+    artist: Optional[str] = None
+    city: Optional[str] = None
+    category_id: Optional[int] = None
+
+
+class GetEventDetailsArgs(BaseModel):
+    event_id: str = Field(min_length=1)
 
 
 class GetTrainDetailsArgs(BaseModel):
@@ -98,8 +110,12 @@ class SearchFlightsArgs(BaseModel):
     destination: str
     departure_date: str
     passengers: int = Field(default=1, ge=1, le=9)
+    children: int = Field(default=0, ge=0, le=8)
+    infants: int = Field(default=0, ge=0, le=8)
     travel_class: Optional[str] = "economy"
     return_date: Optional[str] = None
+    trip_type: Optional[str] = None
+    direct_only: Optional[bool] = None
 
 
 class SearchHotelsArgs(BaseModel):
@@ -387,7 +403,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "search_flights",
-            "description": "Search available flights between two cities on a date.",
+            "description": (
+                "Search live Super Travel flights (api-repository). "
+                "Use city names or IATA codes. For round trip pass return_date."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -396,7 +415,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "departure_date": {"type": "string"},
                     "return_date": {"type": "string"},
                     "passengers": {"type": "integer"},
+                    "children": {"type": "integer"},
+                    "infants": {"type": "integer"},
                     "travel_class": {"type": "string"},
+                    "direct_only": {"type": "boolean"},
                 },
                 "required": ["source", "destination", "departure_date"],
             },
@@ -505,6 +527,46 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "search_events",
+            "description": (
+                "Search live Super Travel events for the logged-in user. "
+                "Use for concerts, shows, festivals, comedy, or any event booking. "
+                "Do not collect guests or take payment — after the user picks an event, "
+                "call get_event_details and give them the booking_url."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search": {
+                        "type": "string",
+                        "description": "Event name search text",
+                    },
+                    "artist": {"type": "string"},
+                    "city": {"type": "string"},
+                    "category_id": {"type": "integer"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_event_details",
+            "description": (
+                "Get one event's tickets, schedule, and the booking_url. "
+                "Never create the booking or charge the card. The user opens booking_url "
+                "in a new tab, fills guest details, and pays there."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"event_id": {"type": "string"}},
+                "required": ["event_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_booking",
             "description": (
                 "Create a booking ONLY after the user explicitly confirms. "
@@ -565,10 +627,18 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 class TravelToolExecutor:
     """Maps predefined tool names to Travel Backend HTTP calls only."""
 
-    def __init__(self, client: TravelBackendClient) -> None:
+    def __init__(
+        self,
+        client: TravelBackendClient,
+        events_client: Optional[SuperTravelEventsClient] = None,
+    ) -> None:
         self._client = client
+        self._events = events_client
+        self._user_access_token: Optional[str] = None
         self._handlers: dict[str, ToolHandler] = {
             "search_trains": self._search_trains,
+            "search_events": self._search_events,
+            "get_event_details": self._get_event_details,
             "search_flights": self._search_flights,
             "search_buses": self._search_buses,
             "search_hotels": self._search_hotels,
@@ -594,7 +664,12 @@ class TravelToolExecutor:
         return set(self._handlers)
 
     async def execute(
-        self, name: str, arguments: dict[str, Any], session_id: Optional[str] = None
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        session_id: Optional[str] = None,
+        *,
+        user_access_token: Optional[str] = None,
     ) -> dict[str, Any]:
         handler = self._handlers.get(name)
         if handler is None:
@@ -602,6 +677,7 @@ class TravelToolExecutor:
                 "error": "unsupported_tool",
                 "message": f"Tool '{name}' is not supported.",
             }
+        self._user_access_token = user_access_token
         try:
             return await handler(arguments, session_id)
         except ValidationError as exc:
@@ -612,45 +688,107 @@ class TravelToolExecutor:
             }
         except TravelBackendError as exc:
             return {"error": exc.code, "message": exc.user_message}
+        finally:
+            self._user_access_token = None
 
     async def _search_trains(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
         args = SearchTrainsArgs.model_validate(arguments)
-        payload = args.model_dump(exclude_none=True)
-        if not payload.get("departure_date"):
-            payload["departure_date"] = date.today().isoformat()
-        if session_id:
-            payload["session_id"] = session_id
-        result = await self._client.request(
-            "POST",
-            "/api/v1/trains/search",
-            json=payload,
+        origin = await self._client.resolve_station(args.source, session_id=session_id)
+        destination = await self._client.resolve_station(
+            args.destination, session_id=session_id
+        )
+        departure = args.departure_date or date.today().isoformat()
+        try:
+            day, month, year = (
+                departure[8:10],
+                departure[5:7],
+                departure[0:4],
+            )
+            irctc_date = f"{day}-{month}-{year}"
+        except Exception:  # noqa: BLE001
+            irctc_date = date.today().strftime("%d-%m-%Y")
+        payload = await self._client.request(
+            "GET",
+            "/api/v1/trains/train-list/",
+            params={
+                "origin": origin,
+                "destination": destination,
+                "date": irctc_date,
+                "page": 1,
+                "page_size": 8,
+            },
             session_id=session_id,
         )
-        if isinstance(result, dict):
-            result = {
-                **result,
-                "source": payload["source"],
-                "destination": payload["destination"],
-                "departure_date": payload["departure_date"],
-                "return_date": payload.get("return_date"),
-                "passengers": payload.get("passengers", 1),
-                "preference": payload.get("preference"),
-                "trip_type": payload.get("trip_type"),
-            }
-        return result
+        rows = payload.get("results") or []
+        results = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            train_id = str(row.get("train_number") or row.get("id") or "")
+            results.append(
+                {
+                    "id": train_id,
+                    "name": row.get("train_name") or train_id,
+                    "source": args.source,
+                    "destination": args.destination,
+                    "origin_code": row.get("origin_code") or origin,
+                    "destination_code": row.get("destination_code") or destination,
+                    "departure_time": (row.get("departure_time") or "")[:5],
+                    "arrival_time": (row.get("arrival_time") or "")[:5],
+                    "duration": row.get("running_time"),
+                    "provider": "SUPER_TRAVEL",
+                }
+            )
+        return {
+            "results": results,
+            "count": len(results),
+            "provider": "SUPER_TRAVEL",
+            "source": args.source,
+            "destination": args.destination,
+            "departure_date": departure,
+            "return_date": args.return_date,
+            "passengers": args.passengers,
+            "preference": args.preference,
+            "trip_type": args.trip_type,
+        }
+
+    def _events_client(self) -> SuperTravelEventsClient:
+        if self._events is None:
+            raise TravelBackendError(
+                "Event search is not configured.",
+                code="events_unavailable",
+            )
+        return self._events
+
+    async def _search_events(
+        self, arguments: dict[str, Any], session_id: Optional[str]
+    ) -> dict[str, Any]:
+        args = SearchEventsArgs.model_validate(arguments)
+        return await self._events_client().search(
+            user_access_token=self._user_access_token,
+            search=args.search,
+            artist=args.artist,
+            city=args.city,
+            category_id=args.category_id,
+            session_id=session_id,
+        )
+
+    async def _get_event_details(
+        self, arguments: dict[str, Any], session_id: Optional[str]
+    ) -> dict[str, Any]:
+        args = GetEventDetailsArgs.model_validate(arguments)
+        return await self._events_client().detail(
+            args.event_id,
+            user_access_token=self._user_access_token,
+            session_id=session_id,
+        )
 
     async def _search_local_transport(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
-        args = SearchLocalTransportArgs.model_validate(arguments)
-        return await self._client.request(
-            "POST",
-            "/api/v1/local-transport/search",
-            json=args.model_dump(exclude_none=True),
-            session_id=session_id,
-        )
+        return await self._unsupported_on_api_repository("Local transport")
 
     async def _get_train_details(
         self, arguments: dict[str, Any], session_id: Optional[str]
@@ -658,7 +796,8 @@ class TravelToolExecutor:
         args = GetTrainDetailsArgs.model_validate(arguments)
         return await self._client.request(
             "GET",
-            f"/api/v1/trains/{args.train_id}/details",
+            "/api/v1/trains/live/",
+            params={"train_number": args.train_id},
             session_id=session_id,
         )
 
@@ -666,21 +805,16 @@ class TravelToolExecutor:
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
         args = LiveTrainStatusArgs.model_validate(arguments)
-        if args.train_id:
-            return await self._client.request(
-                "GET",
-                f"/api/v1/trains/{args.train_id}/live-status",
-                session_id=session_id,
-            )
-        params: dict[str, str] = {}
-        if args.source:
-            params["source"] = args.source
-        if args.destination:
-            params["destination"] = args.destination
+        train_id = args.train_id
+        if not train_id:
+            return {
+                "error": "invalid_tool_arguments",
+                "message": "Please give the train number for live status.",
+            }
         return await self._client.request(
             "GET",
-            "/api/v1/trains/live-status",
-            params=params or None,
+            "/api/v1/trains/live/",
+            params={"train_number": train_id},
             session_id=session_id,
         )
 
@@ -688,47 +822,34 @@ class TravelToolExecutor:
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
         args = WishlistAddArgs.model_validate(arguments)
-        payload = args.model_dump(exclude_none=True)
-        payload["session_id"] = session_id or "anon"
         return await self._client.request(
             "POST",
-            "/api/v1/wishlist",
-            json=payload,
+            "/api/v1/wishlists/",
+            json={"name": args.name or args.train_id, "train_id": args.train_id},
             session_id=session_id,
+            user_access_token=self._user_access_token,
         )
 
     async def _get_wishlist(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
         WishlistGetArgs.model_validate(arguments or {})
-        sid = session_id or "anon"
         return await self._client.request(
             "GET",
-            f"/api/v1/wishlist?session_id={sid}",
+            "/api/v1/wishlists/",
             session_id=session_id,
+            user_access_token=self._user_access_token,
         )
 
     async def _request_charter(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
-        args = CharterRequestArgs.model_validate(arguments)
-        return await self._client.request(
-            "POST",
-            "/api/v1/charter/request",
-            json=args.model_dump(exclude_none=True),
-            session_id=session_id,
-        )
+        return await self._unsupported_on_api_repository("Charter / full coach")
 
     async def _escalate_to_sales(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
-        args = EscalateArgs.model_validate(arguments)
-        return await self._client.request(
-            "POST",
-            "/api/v1/support/escalate",
-            json=args.model_dump(exclude_none=True),
-            session_id=session_id,
-        )
+        return await self._unsupported_on_api_repository("Sales escalation")
 
     async def _request_refund(
         self, arguments: dict[str, Any], session_id: Optional[str]
@@ -743,102 +864,203 @@ class TravelToolExecutor:
             }
         return await self._client.request(
             "POST",
-            "/api/v1/support/refund",
-            json=args.model_dump(exclude_none=True),
+            f"/api/v1/flights/manage/{args.booking_id}/cancel",
+            json={"reason": args.reason},
             session_id=session_id,
+            user_access_token=self._user_access_token,
         )
 
     async def _submit_feedback(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
         args = FeedbackArgs.model_validate(arguments)
-        payload = args.model_dump(exclude_none=True)
-        if session_id:
-            payload["session_id"] = session_id
+        payload = {
+            "rating": args.rating,
+            "comment": args.comment,
+            "booking": args.booking_id,
+        }
         return await self._client.request(
             "POST",
-            "/api/v1/feedback",
-            json=payload,
+            "/api/v1/bookings/rating/",
+            json={k: v for k, v in payload.items() if v is not None},
             session_id=session_id,
+            user_access_token=self._user_access_token,
         )
 
     async def _get_weather_alert(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
-        args = WeatherArgs.model_validate(arguments)
-        city = args.city.strip().strip("/")
-        return await self._client.request(
-            "GET",
-            f"/api/v1/weather/{city}",
-            session_id=session_id,
+        return await self._unsupported_on_api_repository("Weather alerts")
+
+    async def _unsupported_on_api_repository(self, product: str) -> dict[str, Any]:
+        return {
+            "error": "not_on_super_travel",
+            "message": (
+                f"{product} is not available on the Super Travel API. "
+                "I can search flights, trains, hotels, and events."
+            ),
+            "results": [],
+            "count": 0,
+        }
+
+    def _map_flight_card(self, row: dict[str, Any], *, search_tui: str = "") -> dict[str, Any]:
+        selection = row.get("selection") if isinstance(row.get("selection"), dict) else {}
+        flight_id = str(
+            selection.get("index") or row.get("index") or row.get("flight_number") or ""
         )
+        return {
+            "id": flight_id,
+            "name": row.get("flight_number") or row.get("airline_name") or flight_id,
+            "airline": row.get("airline_name"),
+            "airline_code": row.get("airline_code"),
+            "departure_time": row.get("departure_time"),
+            "arrival_time": row.get("arrival_time"),
+            "duration": row.get("duration"),
+            "stops": row.get("stops"),
+            "price": row.get("price") or row.get("gross_fare"),
+            "price_label": row.get("price_label") or row.get("gross_fare_label"),
+            "currency": "INR",
+            "from_code": row.get("departure_code"),
+            "to_code": row.get("arrival_code"),
+            "selection": selection,
+            "flight_fares": row.get("flight_fares") or [],
+            "search_tui": search_tui or selection.get("tui"),
+        }
 
     async def _search_flights(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
         args = SearchFlightsArgs.model_validate(arguments)
-        return await self._client.request(
+        origin = await self._client.resolve_airport(args.source, session_id=session_id)
+        dest = await self._client.resolve_airport(args.destination, session_id=session_id)
+        trip_type = (args.trip_type or "").strip().lower()
+        if args.return_date and trip_type != "oneway":
+            trip_type = "round_trip"
+        if trip_type not in {"oneway", "round_trip"}:
+            trip_type = "oneway"
+        cabin = CABIN_MAP.get((args.travel_class or "economy").strip().lower(), "economy")
+        payload = {
+            "trip_type": trip_type,
+            "travellers": {
+                "adults": max(1, args.passengers),
+                "children": args.children or 0,
+                "infants": args.infants or 0,
+            },
+            "cabin": cabin,
+            "from_airport": origin,
+            "to_airport": dest,
+            "departure_date": args.departure_date,
+            "return_date": args.return_date if trip_type == "round_trip" else None,
+            "student_fare": False,
+            "armed_forces": False,
+            "senior_citizen": False,
+            "direct_only": bool(args.direct_only),
+            "refundable_only": False,
+            "nearby_airports": True,
+        }
+        data = await self._client.request(
             "POST",
             "/api/v1/flights/search",
-            json=args.model_dump(exclude_none=True),
+            json=payload,
             session_id=session_id,
         )
+        flights = data.get("flights") or []
+        if trip_type == "round_trip":
+            groups = data.get("fare_groups") or {}
+            rt = groups.get("RT") if isinstance(groups, dict) else None
+            if isinstance(rt, dict) and isinstance(rt.get("flights"), list):
+                flights = rt["flights"]
+        search_tui = str(data.get("tui") or "")
+        results = [
+            self._map_flight_card(row, search_tui=search_tui)
+            for row in flights
+            if isinstance(row, dict)
+        ][:8]
+        continue_url = ""
+        if self._client._web_app_base_url:
+            continue_url = f"{self._client._web_app_base_url}/preview/flights/search"
+        return {
+            "results": results,
+            "count": len(results),
+            "provider": "SUPER_TRAVEL",
+            "tui": search_tui,
+            "source": args.source,
+            "destination": args.destination,
+            "from_airport": origin,
+            "to_airport": dest,
+            "departure_date": args.departure_date,
+            "return_date": args.return_date,
+            "passengers": args.passengers,
+            "trip_type": trip_type,
+            "booking_url": continue_url,
+        }
 
     async def _search_buses(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
-        args = SearchBusesArgs.model_validate(arguments)
-        payload = args.model_dump(exclude_none=True)
-        if not payload.get("departure_date"):
-            payload["departure_date"] = date.today().isoformat()
-        result = await self._client.request(
-            "POST",
-            "/api/v1/buses/search",
-            json=payload,
-            session_id=session_id,
-        )
-        if isinstance(result, dict):
-            result = {
-                **result,
-                "source": payload["source"],
-                "destination": payload["destination"],
-                "departure_date": payload["departure_date"],
-                "passengers": payload.get("passengers", 1),
-            }
-        return result
+        return await self._unsupported_on_api_repository("Bus search")
 
     async def _search_hotels(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
         args = SearchHotelsArgs.model_validate(arguments)
-        return await self._client.request(
+        adults = max(1, args.guests)
+        occupancy = [
+            {
+                "room_no": index + 1,
+                "adult": max(1, adults if args.rooms == 1 else 1),
+                "child": 0,
+                "child_age": [],
+            }
+            for index in range(max(1, args.rooms))
+        ]
+        data = await self._client.request(
             "POST",
-            "/api/v1/hotels/search",
-            json=args.model_dump(exclude_none=True),
+            "/api/v1/hotels/hotel/search/",
+            json={
+                "city": args.city,
+                "checkin": args.check_in,
+                "checkout": args.check_out,
+                "requiredCurrency": "INR",
+                "occupancy": occupancy,
+            },
             session_id=session_id,
         )
+        rows = data.get("results") or data.get("hotels") or []
+        if isinstance(data.get("data"), list):
+            rows = data["data"]
+        results = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            results.append(
+                {
+                    "id": str(row.get("id") or row.get("hotel_id") or ""),
+                    "name": row.get("name") or "Hotel",
+                    "city": args.city,
+                    "rating": row.get("rating"),
+                    "price": row.get("price") or row.get("total_price") or row.get("price_per_night"),
+                    "currency": row.get("currency") or "INR",
+                }
+            )
+        return {
+            "results": results[:8],
+            "count": len(results[:8]),
+            "provider": "SUPER_TRAVEL",
+            "city": args.city,
+            "check_in": args.check_in,
+            "check_out": args.check_out,
+        }
 
     async def _search_packages(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
-        args = SearchPackagesArgs.model_validate(arguments)
-        return await self._client.request(
-            "POST",
-            "/api/v1/packages/search",
-            json=args.model_dump(exclude_none=True),
-            session_id=session_id,
-        )
+        return await self._unsupported_on_api_repository("Travel packages")
 
     async def _create_package_plan(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
-        args = CreatePackagePlanArgs.model_validate(arguments)
-        return await self._client.request(
-            "POST",
-            "/api/v1/packages/plan",
-            json=args.model_dump(exclude_none=True),
-            session_id=session_id,
-        )
+        return await self._unsupported_on_api_repository("Package plans")
 
     async def _get_booking(
         self, arguments: dict[str, Any], session_id: Optional[str]
@@ -846,8 +1068,9 @@ class TravelToolExecutor:
         args = GetBookingArgs.model_validate(arguments)
         return await self._client.request(
             "GET",
-            f"/api/v1/bookings/{args.booking_id}",
+            f"/api/v1/users/trips/{args.booking_id}",
             session_id=session_id,
+            user_access_token=self._user_access_token,
         )
 
     async def _create_booking(
@@ -862,12 +1085,71 @@ class TravelToolExecutor:
                     "Ask for explicit confirmation first."
                 ),
             }
-        return await self._client.request(
-            "POST",
-            "/api/v1/bookings",
-            json=args.model_dump(exclude_none=True),
-            session_id=session_id,
-        )
+        item_type = (args.item_type or "").strip().lower()
+        if item_type in {"flight", "flights"}:
+            metadata = args.metadata or {}
+            selection = metadata.get("selection") if isinstance(metadata, dict) else None
+            if not isinstance(selection, dict):
+                selection = {
+                    "index": args.item_id,
+                    "order_id": 1,
+                    "amount": str(metadata.get("amount") or ""),
+                    "tui": metadata.get("tui") or metadata.get("search_tui") or "",
+                }
+            fares = metadata.get("flight_fares") if isinstance(metadata, dict) else None
+            fare_payload = {
+                "trip_type": "ON",
+                "include_paid_ssr": True,
+                "flight": {
+                    "departure_code": metadata.get("from_code") or "",
+                    "arrival_code": metadata.get("to_code") or "",
+                },
+                "fares": (
+                    fares
+                    if isinstance(fares, list) and fares
+                    else [
+                        {
+                            "selection": selection,
+                            "price": metadata.get("price"),
+                        }
+                    ]
+                ),
+            }
+            priced = await self._client.request(
+                "POST",
+                "/api/v1/flights/fare-group-details",
+                json=fare_payload,
+                session_id=session_id,
+            )
+            web = self._client._web_app_base_url
+            booking_url = f"{web}/preview/flights/review" if web else ""
+            fare_types = priced.get("fare_types") or []
+            first = fare_types[0] if fare_types and isinstance(fare_types[0], dict) else priced
+            summary = first.get("fare_summary") if isinstance(first, dict) else {}
+            return {
+                "status": "priced",
+                "item_type": "flight",
+                "item_id": args.item_id,
+                "fare_summary": summary,
+                "priced_tui": first.get("priced_tui") if isinstance(first, dict) else None,
+                "total": (summary or {}).get("total_label") or first.get("total_label"),
+                "booking_url": booking_url,
+                "payment_url": booking_url,
+                "message": (
+                    "Live fare is locked. Complete passenger details and payment "
+                    "on Super Travel — voice cannot charge the card."
+                ),
+            }
+        return {
+            "error": "booking_needs_app",
+            "message": (
+                "Super Travel creates flight bookings only after login and payment "
+                "(itinerary → prepare-payment → confirm-payment). "
+                "I can search and price the fare here; finish checkout in the app."
+            ),
+            "item_type": args.item_type,
+            "item_id": args.item_id,
+        }
 
     async def _cancel_booking(
         self, arguments: dict[str, Any], session_id: Optional[str]
@@ -882,9 +1164,10 @@ class TravelToolExecutor:
             }
         return await self._client.request(
             "POST",
-            f"/api/v1/bookings/{args.booking_id}/cancel",
-            json={"reason": args.reason, "confirmed": True},
+            f"/api/v1/flights/manage/{args.booking_id}/cancel",
+            json={"reason": args.reason},
             session_id=session_id,
+            user_access_token=self._user_access_token,
         )
 
 

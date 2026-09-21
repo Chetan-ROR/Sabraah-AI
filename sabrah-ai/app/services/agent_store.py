@@ -27,8 +27,8 @@ def _seed_agents() -> list[AgentRecord]:
     sabrah = AgentRecord(
         id="agent-sabrah",
         name="Sabrah Travel Agent",
-        description="Voice travel assistant for train booking, cancel, and refund.",
-        first_message="What would you like to do — book a train, cancel a ticket, or request a refund?",
+        description="Voice travel assistant for flight, train, and event booking.",
+        first_message="What would you like to do — book a flight, book a train, book an event, cancel a ticket, or request a refund?",
         system_prompt=_default_system_prompt(),
         enabled=True,
         created_at=now,

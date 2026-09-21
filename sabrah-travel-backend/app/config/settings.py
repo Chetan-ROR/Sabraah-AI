@@ -29,12 +29,20 @@ class Settings(BaseSettings):
         alias="SUPER_TRAVEL_API_BASE_URL",
     )
     super_travel_timeout_seconds: float = Field(
-        default=8.0,
+        default=20.0,
         alias="SUPER_TRAVEL_TIMEOUT_SECONDS",
+    )
+    super_travel_flight_timeout_seconds: float = Field(
+        default=60.0,
+        alias="SUPER_TRAVEL_FLIGHT_TIMEOUT_SECONDS",
     )
     train_provider_fallback_mock: bool = Field(
         default=True,
         alias="TRAIN_PROVIDER_FALLBACK_MOCK",
+    )
+    flight_provider_fallback_mock: bool = Field(
+        default=True,
+        alias="FLIGHT_PROVIDER_FALLBACK_MOCK",
     )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 

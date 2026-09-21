@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Union
 
@@ -12,6 +13,58 @@ from openai import AsyncOpenAI, AuthenticationError, RateLimitError
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
+
+_STT_PROMPT = "Sabrah, Sabraah, Pune, Delhi, Jaipur, Mumbai, train, event, ticket."
+
+_STT_PROMPT_LEAKS = (
+    "cities, dates, trains, hotels, passengers, options",
+    "english travel booking conversation",
+    "cities dates trains hotels passengers options",
+)
+
+_STT_LEAK_WORDS = {
+    "cities",
+    "dates",
+    "trains",
+    "hotels",
+    "passengers",
+    "options",
+    "english",
+    "travel",
+    "booking",
+    "conversation",
+}
+
+_WAKE_ONLY_RE = re.compile(
+    r"^(?:hey|hi|hello|ok(?:ay)?|oye|yo)?\s*(?:sabrah+|sabraah+|sahara|saber+|sabre)$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_stt_text(text: str) -> str:
+    return " ".join(re.sub(r"[^\w\s]", " ", (text or "").lower()).split())
+
+
+def is_wake_only_transcript(text: str) -> bool:
+    cleaned = _normalize_stt_text(text)
+    return bool(cleaned and _WAKE_ONLY_RE.match(cleaned))
+
+
+def is_unusable_transcript(text: str) -> bool:
+    """Drop Whisper prompt leaks. Wake-only audio is a greeting, not ignored."""
+    cleaned = _normalize_stt_text(text)
+    if not cleaned:
+        return True
+    if is_wake_only_transcript(text):
+        return False
+    for leak in _STT_PROMPT_LEAKS:
+        leak_n = _normalize_stt_text(leak)
+        if leak_n and (leak_n in cleaned or cleaned in leak_n):
+            return True
+    words = set(cleaned.split())
+    if words and words <= _STT_LEAK_WORDS:
+        return True
+    return False
 
 
 class ProviderError(Exception):
@@ -66,10 +119,7 @@ class OpenAISpeechToTextProvider(SpeechToTextProvider):
                 model=self._model,
                 file=(filename, audio_bytes),
                 language=self._language,
-                prompt=(
-                    "English travel booking conversation. Cities, dates, trains, "
-                    "hotels, passengers, options."
-                ),
+                prompt=_STT_PROMPT,
             )
         except AuthenticationError as exc:
             raise ProviderError(
@@ -90,6 +140,11 @@ class OpenAISpeechToTextProvider(SpeechToTextProvider):
 
         text = (getattr(transcript, "text", None) or "").strip()
         if not text:
+            raise ProviderError(
+                "I could not catch that. Could you please repeat?",
+                code="speech_not_recognized",
+            )
+        if is_unusable_transcript(text) and not is_wake_only_transcript(text):
             raise ProviderError(
                 "I could not catch that. Could you please repeat?",
                 code="speech_not_recognized",

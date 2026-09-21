@@ -39,6 +39,14 @@ def get_agents(request: Request) -> AgentStore:
     return request.app.state.agent_store
 
 
+def _attach_user_token(session, token: Optional[str]) -> bool:
+    cleaned = (token or "").strip()
+    if not cleaned:
+        return False
+    session.user_access_token = cleaned
+    return True
+
+
 def _session_summary(session) -> dict:
     visible = [
         m for m in session.conversation_history if m.role in {"user", "assistant"}
@@ -155,6 +163,7 @@ async def create_session(
         customer_phone=payload.customer_phone,
         customer_email=payload.customer_email,
         source=source,
+        user_access_token=(payload.user_access_token or "").strip() or None,
     )
     # Admin testing: seed opening gambit into the transcript.
     if source == "Admin Console":
@@ -251,10 +260,15 @@ async def chat_text(
     agent: ConversationAgent = Depends(get_agent),
     sessions: SessionStore = Depends(get_sessions),
 ) -> ChatResponse:
-    if body.agent_id:
-        session = await sessions.get(body.session_id)
-        if session is not None and session.agent_id != body.agent_id:
+    session = await sessions.get(body.session_id)
+    if session is not None:
+        changed = False
+        if body.agent_id and session.agent_id != body.agent_id:
             session.agent_id = body.agent_id
+            changed = True
+        if _attach_user_token(session, body.user_access_token):
+            changed = True
+        if changed:
             await sessions.save(session)
     try:
         return await agent.handle_text(body.session_id, body.message)
@@ -269,21 +283,23 @@ async def chat_text(
 async def chat_voice(
     session_id: str = Form(...),
     audio: UploadFile = File(...),
+    user_access_token: Optional[str] = Form(default=None),
     agent: ConversationAgent = Depends(get_agent),
+    sessions: SessionStore = Depends(get_sessions),
 ) -> ChatResponse:
+    if user_access_token:
+        session = await sessions.get(session_id)
+        if session is not None and _attach_user_token(session, user_access_token):
+            await sessions.save(session)
     audio_bytes = await audio.read()
-    if not audio_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "message": "Empty audio received. Please try speaking again.",
-                "code": "empty_audio",
-            },
-        )
     filename = audio.filename or "audio.webm"
     try:
         return await agent.handle_voice(session_id, audio_bytes, filename=filename)
     except ProviderError as exc:
+        if exc.code in {"empty_audio", "speech_not_recognized"}:
+            session = await sessions.get(session_id)
+            if session is not None:
+                return agent._ignored_voice(session)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"message": exc.user_message, "code": exc.code},

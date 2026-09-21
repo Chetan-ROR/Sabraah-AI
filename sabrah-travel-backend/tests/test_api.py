@@ -281,3 +281,70 @@ def test_booking_flow(client: TestClient, auth_headers: dict[str, str]) -> None:
     )
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
+
+
+def test_map_super_travel_flight_card() -> None:
+    from app.providers.super_travel import map_flight_card, parse_money
+
+    assert parse_money("₹4,299") == 4299.0
+    mapped = map_flight_card(
+        {
+            "flight_number": "6E 2134",
+            "index": "6E|2",
+            "airline_name": "IndiGo",
+            "departure_time": "06:00",
+            "arrival_time": "08:10",
+            "duration": "2h 10m",
+            "departure_code": "DEL",
+            "arrival_code": "BOM",
+            "price": "4299",
+            "seats": 5,
+            "cabin_label": "Economy",
+        },
+        source_label="Delhi",
+        destination_label="Mumbai",
+        passengers=1,
+        travel_class="economy",
+    )
+    assert mapped.provider == "SUPER_TRAVEL"
+    assert mapped.airline == "IndiGo"
+    assert mapped.price == 4299
+    assert mapped.id == "6E 2134 [6E|2]"
+
+
+@pytest.mark.asyncio
+async def test_real_flight_provider_maps_live_rows(monkeypatch) -> None:
+    from datetime import date
+
+    from app.providers import RealFlightProvider
+
+    async def fake_resolve(query: str):
+        return "DEL" if "del" in query.lower() else "BOM"
+
+    async def fake_fetch(**_kwargs):
+        return [
+            {
+                "flight_number": "AI 101",
+                "index": "AI|1",
+                "airline_name": "Air India",
+                "departure_time": "09:00",
+                "arrival_time": "11:15",
+                "duration": "2h 15m",
+                "price": "5100",
+                "seats": 8,
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.providers.super_travel.resolve_airport_code", fake_resolve
+    )
+    monkeypatch.setattr(
+        "app.providers.super_travel.fetch_flight_search", fake_fetch
+    )
+
+    provider = RealFlightProvider(fallback_to_mock=False)
+    rows = await provider.search("Delhi", "Mumbai", date(2026, 9, 20))
+    assert len(rows) == 1
+    assert rows[0].provider == "SUPER_TRAVEL"
+    assert rows[0].airline == "Air India"
+    assert rows[0].price == 5100

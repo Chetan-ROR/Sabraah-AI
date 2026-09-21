@@ -30,9 +30,22 @@ class TravelSlotMemory(BaseModel):
     # one_way | round_trip | multi_city
     trip_type: Optional[str] = None
     transport_type: Optional[str] = None
-    # wedding | baraat | personal_work | tourism | conference | other
+    # leisure | business | honeymoon | family | adventure | religious | medical |
+    # shopping | wedding | baraat | conference | weekend | other
     trip_purpose: Optional[str] = None
-    # book_train | cancel | refund | charter | (legacy support)
+    # solo | couple | family | group | business
+    party_type: Optional[str] = None
+    # price | time | comfort | luxury | convenience | experience | balanced
+    value_priority: Optional[str] = None
+    date_flexible: Optional[bool] = None
+    trip_nights: Optional[int] = None
+    infant_count: Optional[int] = None
+    direct_only: Optional[bool] = None
+    avoid_early_departure: Optional[bool] = None
+    travel_pace: Optional[str] = None
+    accessibility_needed: Optional[bool] = None
+    hotel_area: Optional[str] = None
+    # book_train | book_flight | book_event | cancel | refund | charter | (legacy support)
     user_goal: Optional[str] = None
     # welcome | goal | where | why | when | passengers | search | ...
     flow_step: Optional[str] = None
@@ -71,6 +84,7 @@ class TravelSlotMemory(BaseModel):
     contact_email: Optional[str] = None
     booking_confirmation: Optional[bool] = None
     last_booking_id: Optional[str] = None
+    selected_event_id: Optional[str] = None
     feedback_requested: Optional[bool] = None
     weather_alert_sent: Optional[bool] = None
     pre_booking_step: Optional[str] = None  # train_pick | meals | passengers | phone | confirm
@@ -99,6 +113,7 @@ class SessionState(BaseModel):
     wishlist: list[dict[str, Any]] = Field(default_factory=list)
     travelers: list[dict[str, Any]] = Field(default_factory=list)
     booking_details: dict[str, Any] = Field(default_factory=dict)
+    user_access_token: Optional[str] = None
 
 
 class SessionCreateResponse(BaseModel):
@@ -112,12 +127,14 @@ class SessionCreateRequest(BaseModel):
     customer_phone: Optional[str] = None
     customer_email: Optional[str] = None
     source: Optional[str] = None
+    user_access_token: Optional[str] = None
 
 
 class TextChatRequest(BaseModel):
     session_id: str
     message: str = Field(min_length=1)
     agent_id: Optional[str] = None
+    user_access_token: Optional[str] = None
 
 
 class AgentRecord(BaseModel):
@@ -158,10 +175,13 @@ class ChatResponse(BaseModel):
     memory: TravelSlotMemory
     booking_id: Optional[str] = None
     payment_url: Optional[str] = None
+    booking_url: Optional[str] = None
+    open_booking: bool = False
     payment_amount: Optional[float] = None
     payment_currency: Optional[str] = None
     offerings: dict[str, Any] = Field(default_factory=dict)
     booking_details: dict[str, Any] = Field(default_factory=dict)
+    ignored: bool = False
 
 
 class HealthResponse(BaseModel):

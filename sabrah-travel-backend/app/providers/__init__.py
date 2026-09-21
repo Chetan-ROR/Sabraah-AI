@@ -36,6 +36,7 @@ class FlightProvider(ABC):
         departure_date: date,
         passengers: int = 1,
         travel_class: Optional[str] = "economy",
+        return_date: Optional[date] = None,
     ) -> list[FlightResult]:
         raise NotImplementedError
 
@@ -207,6 +208,7 @@ class MockFlightProvider(FlightProvider):
         departure_date: date,
         passengers: int = 1,
         travel_class: Optional[str] = "economy",
+        return_date: Optional[date] = None,
     ) -> list[FlightResult]:
         return [
             FlightResult(
@@ -522,6 +524,12 @@ class RealTrainProvider(TrainProvider):
 
 
 class RealFlightProvider(FlightProvider):
+    """Live flights from Super Travel (api-repository / Benzy)."""
+
+    def __init__(self, *, fallback_to_mock: bool = True) -> None:
+        self._fallback_to_mock = fallback_to_mock
+        self._mock = MockFlightProvider()
+
     async def search(
         self,
         source: str,
@@ -529,10 +537,58 @@ class RealFlightProvider(FlightProvider):
         departure_date: date,
         passengers: int = 1,
         travel_class: Optional[str] = "economy",
+        return_date: Optional[date] = None,
     ) -> list[FlightResult]:
-        raise NotImplementedError(
-            "RealFlightProvider is not configured yet. Set FLIGHT_PROVIDER=mock."
+        from app.providers.super_travel import (
+            fetch_flight_search,
+            map_flight_card,
+            resolve_airport_code,
         )
+
+        try:
+            origin = await resolve_airport_code(source)
+            dest = await resolve_airport_code(destination)
+            if not origin or not dest:
+                raise RuntimeError(
+                    f"Could not resolve airports for {source!r} → {destination!r}"
+                )
+            raw_rows = await fetch_flight_search(
+                origin=origin,
+                destination=dest,
+                departure_date=departure_date,
+                passengers=passengers,
+                travel_class=travel_class,
+                return_date=return_date,
+            )
+            results = [
+                map_flight_card(
+                    row,
+                    source_label=source,
+                    destination_label=destination,
+                    passengers=passengers,
+                    travel_class=travel_class,
+                )
+                for row in raw_rows[:8]
+            ]
+            if not results:
+                raise RuntimeError("No mappable live flights")
+            return results
+        except Exception as exc:  # noqa: BLE001 — soft-fail to mock catalog
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "RealFlightProvider falling back to mock: %s", exc
+            )
+            if not self._fallback_to_mock:
+                raise
+            return await self._mock.search(
+                source=source,
+                destination=destination,
+                departure_date=departure_date,
+                passengers=passengers,
+                travel_class=travel_class,
+                return_date=return_date,
+            )
 
 
 class RealHotelProvider(HotelProvider):
@@ -596,7 +652,11 @@ def build_flight_provider(name: str) -> FlightProvider:
     if name == "mock":
         return MockFlightProvider()
     if name == "real":
-        return RealFlightProvider()
+        from app.config.settings import get_settings
+
+        return RealFlightProvider(
+            fallback_to_mock=get_settings().flight_provider_fallback_mock
+        )
     raise ValueError(f"Unknown FLIGHT_PROVIDER: {name}")
 
 

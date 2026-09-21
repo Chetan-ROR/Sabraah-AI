@@ -99,13 +99,15 @@ async def resolve_station_code(query: str) -> Optional[str]:
     raw = (query or "").strip()
     if not raw:
         return None
-    upper = raw.upper()
-    # Already looks like a station code (INDB, CSTM, NDLS).
-    if re.fullmatch(r"[A-Z]{2,5}", upper):
-        return upper
-
     key = " ".join(raw.lower().split())
     cached = CITY_STATION_CODES.get(key)
+    if cached:
+        return cached
+
+    upper = raw.upper()
+    # IRCTC codes are typically 2–4 letters. 5-letter words like DELHI are cities.
+    if re.fullmatch(r"[A-Z]{2,4}", upper):
+        return upper
 
     base = _base_url()
     if not base:
@@ -139,12 +141,12 @@ async def resolve_station_code_fast(query: str) -> Optional[str]:
     raw = (query or "").strip()
     if not raw:
         return None
-    upper = raw.upper()
-    if re.fullmatch(r"[A-Z]{2,5}", upper):
-        return upper
     key = " ".join(raw.lower().split())
     if key in CITY_STATION_CODES:
         return CITY_STATION_CODES[key]
+    upper = raw.upper()
+    if re.fullmatch(r"[A-Z]{2,4}", upper):
+        return upper
     return await resolve_station_code(query)
 
 async def fetch_train_list(
@@ -310,3 +312,211 @@ def map_train_row(
         "provider": "SUPER_TRAVEL",
         "_passengers": passengers,
     }
+
+
+CITY_AIRPORT_CODES: dict[str, str] = {
+    "delhi": "DEL",
+    "new delhi": "DEL",
+    "mumbai": "BOM",
+    "bombay": "BOM",
+    "bangalore": "BLR",
+    "bengaluru": "BLR",
+    "hyderabad": "HYD",
+    "chennai": "MAA",
+    "kolkata": "CCU",
+    "calcutta": "CCU",
+    "pune": "PNQ",
+    "ahmedabad": "AMD",
+    "goa": "GOI",
+    "jaipur": "JAI",
+    "lucknow": "LKO",
+    "kochi": "COK",
+    "cochin": "COK",
+    "chandigarh": "IXC",
+    "indore": "IDR",
+    "bhopal": "BHO",
+    "nagpur": "NAG",
+    "surat": "STV",
+    "vadodara": "BDQ",
+    "varanasi": "VNS",
+    "amritsar": "ATQ",
+    "srinagar": "SXR",
+    "guwahati": "GAU",
+    "trivandrum": "TRV",
+    "thiruvananthapuram": "TRV",
+    "coimbatore": "CJB",
+    "visakhapatnam": "VTZ",
+    "patna": "PAT",
+    "ranchi": "IXR",
+    "raipur": "RPR",
+    "dubai": "DXB",
+    "singapore": "SIN",
+    "london": "LHR",
+    "new york": "JFK",
+    "bangkok": "BKK",
+}
+
+
+def _flight_timeout() -> float:
+    return float(get_settings().super_travel_flight_timeout_seconds)
+
+
+def parse_money(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = re.sub(r"[^\d.]", "", str(value))
+    try:
+        return float(text) if text else 0.0
+    except ValueError:
+        return 0.0
+
+
+def _cabin_for_api(travel_class: Optional[str]) -> str:
+    raw = (travel_class or "economy").strip().lower().replace(" ", "_")
+    mapping = {
+        "e": "economy",
+        "economy": "economy",
+        "premium_economy": "premium_economy",
+        "premiumeconomy": "premium_economy",
+        "business": "business",
+        "first": "first",
+        "1a": "first",
+        "2a": "business",
+        "3a": "economy",
+    }
+    return mapping.get(raw, "economy")
+
+
+async def resolve_airport_code(query: str) -> Optional[str]:
+    """Resolve city / airport name to IATA via GET /flights/airports."""
+    raw = (query or "").strip()
+    if not raw:
+        return None
+    key = " ".join(raw.lower().split())
+    cached = CITY_AIRPORT_CODES.get(key)
+    if cached:
+        return cached
+
+    upper = raw.upper()
+    if re.fullmatch(r"[A-Z]{3}", upper):
+        return upper
+
+    base = _base_url()
+    if not base:
+        return cached
+
+    try:
+        async with httpx.AsyncClient(timeout=_timeout()) as client:
+            resp = await client.get(
+                f"{base}/api/v1/flights/airports",
+                params={"q": raw, "limit": 10},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            data = payload.get("data") or {}
+            rows = data.get("airports") if isinstance(data, dict) else None
+            if not rows:
+                return cached
+            for row in rows:
+                code = str(row.get("code") or "").upper()
+                city = str(row.get("city") or "").lower()
+                name = str(row.get("name") or "").lower()
+                if code == upper or key == city or key in city or key in name:
+                    return code
+            return str(rows[0].get("code") or "").upper() or cached
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("airport lookup failed for %r: %s", raw, exc)
+        return cached
+
+
+async def fetch_flight_search(
+    *,
+    origin: str,
+    destination: str,
+    departure_date: date,
+    passengers: int = 1,
+    travel_class: Optional[str] = "economy",
+    return_date: Optional[date] = None,
+) -> list[dict[str, Any]]:
+    base = _base_url()
+    if not base:
+        raise RuntimeError("SUPER_TRAVEL_API_BASE_URL is not set")
+
+    trip_type = "round_trip" if return_date else "oneway"
+    payload: dict[str, Any] = {
+        "trip_type": trip_type,
+        "travellers": {"adults": max(1, int(passengers)), "children": 0, "infants": 0},
+        "cabin": _cabin_for_api(travel_class),
+        "from_airport": origin,
+        "to_airport": destination,
+        "departure_date": departure_date.isoformat(),
+        "nearby_airports": True,
+        "direct_only": False,
+        "refundable_only": False,
+    }
+    if return_date:
+        payload["return_date"] = return_date.isoformat()
+
+    async with httpx.AsyncClient(timeout=_flight_timeout()) as client:
+        resp = await client.post(f"{base}/api/v1/flights/search", json=payload)
+        resp.raise_for_status()
+        body = resp.json()
+        data = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(data, dict):
+            raise RuntimeError("Flight search returned no data")
+        flights = data.get("flights") or []
+        if not flights:
+            raise RuntimeError(
+                f"No live flights for {origin}→{destination} on {departure_date}"
+            )
+        return list(flights)
+
+
+def map_flight_card(
+    row: dict[str, Any],
+    *,
+    source_label: str,
+    destination_label: str,
+    passengers: int,
+    travel_class: Optional[str],
+) -> FlightResult:
+    from app.schemas import FlightResult
+
+    number = str(row.get("flight_number") or "").strip()
+    index = str(row.get("index") or "").strip()
+    flight_id = number or index or f"FLIGHT-{row.get('order_id') or '0'}"
+    if number and index:
+        flight_id = f"{number} [{index}]"
+    airline = (
+        str(row.get("airline_name") or "").strip()
+        or str(row.get("airline_code") or "").strip()
+        or "Airline"
+    )
+    price = parse_money(row.get("price") or row.get("gross_fare"))
+    if price <= 0:
+        selection = row.get("selection") or {}
+        price = parse_money(selection.get("amount"))
+    seats = row.get("seats")
+    try:
+        seat_count = int(seats) if seats is not None else 9
+    except (TypeError, ValueError):
+        seat_count = 9
+    cabin = str(row.get("cabin_label") or row.get("cabin") or travel_class or "economy")
+    return FlightResult(
+        id=flight_id,
+        airline=airline,
+        source=str(row.get("departure_label") or row.get("departure_code") or source_label),
+        destination=str(
+            row.get("arrival_label") or row.get("arrival_code") or destination_label
+        ),
+        departure_time=str(row.get("departure_time") or "—"),
+        arrival_time=str(row.get("arrival_time") or "—"),
+        duration=str(row.get("duration") or "—"),
+        price=price,
+        currency="INR",
+        travel_class=cabin,
+        available_seats=max(seat_count, 0),
+        provider="SUPER_TRAVEL",
+    )

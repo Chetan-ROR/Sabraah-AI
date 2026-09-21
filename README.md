@@ -2,12 +2,12 @@
 
 Voice-based AI travel assistant MVP.
 
-Sabrah consists of **two independent Python applications**:
+Sabrah AI talks to **api-repository** (Super Travel Django API). Do not run `sabrah-travel-backend` for this flow.
 
 | Project | Port | Responsibility |
 |---------|------|----------------|
 | `sabrah-ai` | 8000 | Voice I/O, speech recognition, LLM conversation, tool calling, TTS |
-| `sabrah-travel-backend` | 8001 | Travel search, packages, bookings (mock providers for MVP) |
+| `api-repository` | 8002 | Flights, trains, hotels, events, bookings |
 
 ```text
 Browser microphone
@@ -25,7 +25,23 @@ ElevenLabs Text-to-Speech      (sabrah-ai)
 Browser speaker
 ```
 
-Travel business logic lives only in `sabrah-travel-backend`. Sabrah AI never invents prices, availability, or booking IDs.
+Travel business logic lives in **api-repository** (Super Travel Django API on port 8002). `sabrah-travel-backend` is no longer used by Sabrah AI.
+
+```text
+Browser microphone
+        ↓
+OpenAI Speech-to-Text          (sabrah-ai)
+        ↓
+OpenAI GPT + tool calling      (sabrah-ai)
+        ↓
+HTTP Super Travel APIs         (api-repository :8002)
+        ↓
+OpenAI GPT final reply         (sabrah-ai)
+        ↓
+ElevenLabs Text-to-Speech      (sabrah-ai)
+        ↓
+Browser speaker
+```
 
 ---
 
@@ -49,16 +65,11 @@ Edit both `.env` files (created from `.env.example` by `setup.sh`):
 OPENAI_API_KEY=sk-...
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
-TRAVEL_BACKEND_API_KEY=local-development-key
+TRAVEL_BACKEND_BASE_URL=http://127.0.0.1:8002
+SUPER_TRAVEL_API_BASE_URL=http://127.0.0.1:8002
 ```
 
-**`sabrah-travel-backend/.env`** — ensure:
-
-```env
-API_KEY=local-development-key
-```
-
-`TRAVEL_BACKEND_API_KEY` in Sabrah AI must match `API_KEY` in Travel Backend.
+Start **api-repository** on port 8002 before Sabrah AI. `TRAVEL_BACKEND_API_KEY` is optional (search is anonymous; booking/payment needs a user JWT).
 
 ### 3. Run
 
@@ -83,6 +94,8 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Open: [http://127.0.0.1:8000](http://127.0.0.1:8000)
+
+**How to talk to Sabraah** (what to say for flights, trains, hotels, events, cancel): see [`CONVERSATION_FLOW.md`](CONVERSATION_FLOW.md).
 
 ---
 

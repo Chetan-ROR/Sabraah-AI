@@ -36,7 +36,7 @@ def load_first_message(agent_id: Optional[str] = None) -> str:
         if agent is not None and agent.first_message.strip():
             return agent.first_message.strip()
     return (
-        "What would you like to do — book a train, cancel a ticket, or request a refund?"
+        "What would you like to do — book a flight, book a train, book an event, cancel a ticket, or request a refund?"
     )
 
 

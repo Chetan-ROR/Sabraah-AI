@@ -23,7 +23,7 @@ from app.providers import (
     build_stt_provider,
     build_tts_provider,
 )
-from app.services import AgentStore, InMemorySessionStore, TravelBackendClient
+from app.services import AgentStore, InMemorySessionStore, SuperTravelEventsClient, TravelBackendClient
 from app.tools import TravelToolExecutor
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -49,6 +49,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     travel_client = TravelBackendClient(
         base_url=settings.travel_backend_base_url,
         api_key=settings.travel_backend_api_key,
+        timeout=settings.travel_backend_timeout_seconds,
+        web_app_base_url=settings.web_app_base_url,
+    )
+    events_client = SuperTravelEventsClient(
+        base_url=settings.super_travel_api_base_url,
+        timeout=settings.super_travel_timeout_seconds,
+        web_app_base_url=settings.web_app_base_url,
     )
     session_store = InMemorySessionStore(ttl_minutes=settings.session_ttl_minutes)
     agent_store = AgentStore()
@@ -58,7 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         llm=build_llm_provider(settings, openai_client),
         stt=build_stt_provider(settings, openai_client),
         tts=build_tts_provider(settings, openai_client),
-        tools=TravelToolExecutor(travel_client),
+        tools=TravelToolExecutor(travel_client, events_client),
     )
 
     app.state.settings = settings

@@ -87,6 +87,7 @@ class InMemorySessionStore(SessionStore):
             customer_phone=existing.customer_phone,
             customer_email=existing.customer_email,
             source=existing.source,
+            user_access_token=existing.user_access_token,
         )
         return await self.save(reset)
 

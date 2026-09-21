@@ -7,7 +7,7 @@ Responsibilities:
 - Browser microphone capture
 - OpenAI Speech-to-Text
 - OpenAI GPT conversation + tool calling
-- Calling Sabrah Travel Backend
+- Calling Super Travel (`api-repository`) for flights, trains, hotels, events
 - ElevenLabs Text-to-Speech
 - Serving the voice UI
 
@@ -18,7 +18,7 @@ This project does **not** contain travel business logic or mock travel data.
 - Python 3.11+
 - OpenAI API key with billing enabled
 - ElevenLabs API key + Voice ID
-- Running `sabrah-travel-backend` on port 8001
+- Running `api-repository` on port 8002
 
 ## Installation
 
@@ -43,9 +43,11 @@ ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
 ELEVENLABS_MODEL_ID=eleven_multilingual_v2
 
-TRAVEL_BACKEND_BASE_URL=http://127.0.0.1:8001
-TRAVEL_BACKEND_API_KEY=local-development-key
+TRAVEL_BACKEND_BASE_URL=http://127.0.0.1:8002
+TRAVEL_BACKEND_API_KEY=
 ```
+
+Search/list APIs on api-repository are anonymous. Login JWT is only needed for itinerary, payment, cancel, wishlist.
 
 ### OpenAI setup
 
@@ -60,17 +62,17 @@ TRAVEL_BACKEND_API_KEY=local-development-key
 3. Prefer `eleven_multilingual_v2` for English / Hindi / Hinglish
 4. If TTS fails, Sabrah still returns the text reply when possible
 
-`TRAVEL_BACKEND_API_KEY` must match Travel Backend `API_KEY`.
-
 ## Run
 
-Start Travel Backend first, then:
+Start **api-repository** on port 8002 first, then:
 
 ```bash
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Open: http://127.0.0.1:8000
+
+**How to use (what to say, for which booking, and in what order):** [`../CONVERSATION_FLOW.md`](../CONVERSATION_FLOW.md)
 
 ## Testing without a microphone
 
