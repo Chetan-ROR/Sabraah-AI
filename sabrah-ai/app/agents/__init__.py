@@ -314,6 +314,7 @@ class ConversationAgent:
                     started=started,
                 )
 
+        user_text = self._repair_booking_transcript(user_text)
         self._maybe_set_booking_mode(session, user_text)
         append_message(session, "user", user_text)
 
@@ -1709,6 +1710,33 @@ class ConversationAgent:
         )
 
     @staticmethod
+    def _repair_booking_transcript(user_text: str) -> str:
+        """Fix common STT misses (Indian English / Chrome wake leftovers)."""
+        text = user_text or ""
+        stripped = text.strip()
+        if re.fullmatch(r"(peace|peas|pease|peece)[.!?]*", stripped, re.I):
+            return "Thank you."
+        if re.fullmatch(r"(tank you|thank u|thanks you|thenk you|tenq|thnkyu)[.!?]*", stripped, re.I):
+            return "Thank you."
+        if re.fullmatch(r"(buy buy|by by|bye bye|byebye)[.!?]*", stripped, re.I):
+            return "Bye."
+        text = re.sub(
+            r"\b(book(?:ed|ing)?(?:\s+a|\s+the|\s+my)?\s+)"
+            r"(drain|drains|trend|trends|tram|trams|terrain|raine?s?)\b",
+            r"\1train",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r"\b(book(?:ed|ing)?(?:\s+a|\s+the|\s+my)?\s+)"
+            r"(plain|plains)\b",
+            r"\1plane",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return text
+
+    @staticmethod
     def _is_flight_intent(text: str) -> bool:
         lowered = (text or "").lower()
         return bool(
@@ -1721,7 +1749,12 @@ class ConversationAgent:
     @staticmethod
     def _is_train_intent(text: str) -> bool:
         lowered = (text or "").lower()
-        return bool(re.search(r"\b(trains?|irctc|railway|rail)\b", lowered))
+        return bool(
+            re.search(
+                r"\b(trains?|irctc|railway|rail(?:way)?s?|train ticket)\b",
+                lowered,
+            )
+        )
 
     @staticmethod
     def _is_hotel_intent(text: str) -> bool:
@@ -2750,7 +2783,7 @@ class ConversationAgent:
                 matched_goal = "book_flight"
             elif self._is_hotel_intent(text):
                 matched_goal = "book_hotel"
-            elif any(
+            elif self._is_train_intent(text) or any(
                 k in text
                 for k in (
                     "book a train",
@@ -2802,9 +2835,13 @@ class ConversationAgent:
                         return "Where would you like to go? You can say Pune to Delhi, and who is travelling."
                 elif matched_goal == "book_train":
                     mem.booking_mode = mem.booking_mode or "normal"
+                    mem.transport_type = "train"
                     mem.intent = "book"
                     if not (mem.source and mem.destination):
-                        return "Where would you like to go? Say it like Pune to Delhi."
+                        return (
+                            "Okay, train booking. Where would you like to go? "
+                            "Say it like Pune to Delhi."
+                        )
                 elif matched_goal == "charter":
                     mem.booking_mode = "charter"
                     mem.intent = "charter"

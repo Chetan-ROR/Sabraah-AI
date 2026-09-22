@@ -14,7 +14,10 @@ from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
-_STT_PROMPT = "Sabrah, Sabraah, Pune, Delhi, Jaipur, Mumbai, train, event, ticket."
+_STT_PROMPT = (
+    "Hey Sabraah. Book a train. Book a flight. Book a hotel. Book an event. "
+    "Thank you. Please. Bye. Pune to Delhi. Mumbai. Indore. Jaipur."
+)
 
 _STT_PROMPT_LEAKS = (
     "cities, dates, trains, hotels, passengers, options",
@@ -120,6 +123,7 @@ class OpenAISpeechToTextProvider(SpeechToTextProvider):
                 file=(filename, audio_bytes),
                 language=self._language,
                 prompt=_STT_PROMPT,
+                temperature=0,
             )
         except AuthenticationError as exc:
             raise ProviderError(

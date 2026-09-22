@@ -745,6 +745,49 @@ def test_guided_flight_search_not_trains(client) -> None:
     assert data["offerings"].get("flights")
 
 
+def test_book_a_train_uses_guided_flow(client) -> None:
+    test_client, _ = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Hi Sabrah"},
+    )
+    reply = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Book a train"},
+    )
+    data = reply.json()
+    text = data["assistant_text"].lower()
+    assert "train" in text
+    assert "pune to delhi" in text
+    assert data["memory"]["user_goal"] == "book_train"
+    assert "date" not in text
+
+
+def test_stt_book_a_drain_becomes_train(client) -> None:
+    test_client, _ = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    reply = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Book a drain."},
+    )
+    data = reply.json()
+    assert "train" in data["user_text"].lower()
+    assert data["memory"]["user_goal"] == "book_train"
+    assert "train" in data["assistant_text"].lower()
+
+
+def test_stt_peace_becomes_thank_you(client) -> None:
+    test_client, _ = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    reply = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Peace."},
+    )
+    data = reply.json()
+    assert "thank you" in data["user_text"].lower()
+
+
 def test_guided_flight_asks_fare_and_extras(client) -> None:
     test_client, stack = client
     session = test_client.post("/api/v1/sessions").json()["session_id"]
