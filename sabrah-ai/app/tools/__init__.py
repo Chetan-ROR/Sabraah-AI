@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Union
 from pydantic import BaseModel, Field, ValidationError
 
 from app.services.events_client import SuperTravelEventsClient
-from app.services.travel_client import CABIN_MAP, TravelBackendClient, TravelBackendError
+from app.services.travel_client import CABIN_MAP, TravelBackendClient, TravelBackendError, friendly_travel_error
 
 logger = logging.getLogger(__name__)
 
@@ -687,7 +687,16 @@ class TravelToolExecutor:
                 "details": exc.errors(),
             }
         except TravelBackendError as exc:
-            return {"error": exc.code, "message": exc.user_message}
+            return {
+                "error": exc.code,
+                "message": friendly_travel_error(
+                    exc.user_message,
+                    fallback=(
+                        "I could not complete that travel search right now. "
+                        "Please try another city or date."
+                    ),
+                ),
+            }
         finally:
             self._user_access_token = None
 
@@ -727,17 +736,23 @@ class TravelToolExecutor:
             if not isinstance(row, dict):
                 continue
             train_id = str(row.get("train_number") or row.get("id") or "")
+            dep = str(row.get("departure_time") or "")
+            arr = str(row.get("arrival_time") or "")
             results.append(
                 {
                     "id": train_id,
+                    "train_number": train_id,
                     "name": row.get("train_name") or train_id,
                     "source": args.source,
                     "destination": args.destination,
                     "origin_code": row.get("origin_code") or origin,
                     "destination_code": row.get("destination_code") or destination,
-                    "departure_time": (row.get("departure_time") or "")[:5],
-                    "arrival_time": (row.get("arrival_time") or "")[:5],
+                    "origin_station": row.get("origin_station") or args.source,
+                    "destination_station": row.get("destination_station") or args.destination,
+                    "departure_time": dep[:5] if dep else "",
+                    "arrival_time": arr[:5] if arr else "",
                     "duration": row.get("running_time"),
+                    "distance_km": row.get("distance_km"),
                     "provider": "SUPER_TRAVEL",
                 }
             )

@@ -20,6 +20,7 @@ from app.providers import (
     is_wake_only_transcript,
 )
 from app.services.session_store import SessionStore, append_message, update_memory_from_slots
+from app.services.travel_client import CITY_AIRPORTS, CITY_STATIONS, friendly_travel_error
 from app.tools import TOOL_DEFINITIONS, TravelToolExecutor, parse_tool_arguments
 
 logger = logging.getLogger(__name__)
@@ -183,10 +184,31 @@ class ConversationAgent:
             mem.catering_full_train = True
 
         if ConversationAgent._is_event_intent(text):
-            mem.user_goal = "book_event"
-            mem.booking_mode = "event"
-            mem.intent = "book"
-            mem.flow_step = "event_search"
+            mem.event_required = True
+            has_train = ConversationAgent._is_train_intent(text)
+            has_flight = ConversationAgent._is_flight_intent(text)
+            if has_flight and not has_train:
+                mem.user_goal = "book_flight"
+                mem.transport_type = "flight"
+                mem.flight_required = True
+                mem.booking_mode = "flight"
+                mem.intent = "book"
+            elif has_train:
+                mem.user_goal = mem.user_goal or "book_train"
+                mem.transport_type = mem.transport_type or "train"
+                mem.booking_mode = mem.booking_mode or "normal"
+                mem.intent = "book"
+            else:
+                mem.user_goal = "book_event"
+                mem.intent = "book"
+                mem.flow_step = "event_search"
+                dest = ConversationAgent._parse_destination_mention(user_text)
+                src, _dst = ConversationAgent._parse_route_from_text(user_text)
+                if dest or src:
+                    mem.booking_mode = mem.booking_mode or "normal"
+                    mem.transport_type = mem.transport_type or "train"
+                else:
+                    mem.booking_mode = "event"
         elif ConversationAgent._is_flight_intent(text) and mem.user_goal in {
             None,
             "book_train",
@@ -350,6 +372,8 @@ class ConversationAgent:
                 early_text = self._format_booking_review(session)
         if early_text is None:
             early_text = self._handle_passenger_details(session, user_text)
+        if early_text is None:
+            early_text = self._handle_read_options(session, user_text)
         if early_text is None:
             early_text = await self._handle_sequential_choice(
                 session, user_text, tools_used
@@ -1460,14 +1484,14 @@ class ConversationAgent:
             cleaned,
             flags=re.IGNORECASE,
         )
-        return cleaned.strip(" .,")
+        return cleaned.strip(" .,?!")
 
     @staticmethod
     def _parse_route_from_text(user_text: str) -> tuple[Optional[str], Optional[str]]:
         text = " ".join((user_text or "").strip().split())
         patterns = [
-            r"(?:route\s+is|from)\s+([A-Za-z][A-Za-z\s]+?)\s+(?:to|→|->)\s+([A-Za-z][A-Za-z\s]+?)(?:\s+(?:via|by|and|on|travel)\b|[.,]|$)",
-            r"\b([A-Za-z][A-Za-z\s]{1,30}?)\s+(?:to|→|->)\s+([A-Za-z][A-Za-z\s]{1,30}?)(?:\s+(?:via|by|and|on|travel)\b|[.,]|$)",
+            r"(?:route\s+is|from)\s+([A-Za-z][A-Za-z\s]+?)\s+(?:to|→|->)\s+([A-Za-z][A-Za-z\s]+?)(?:\s+(?:via|by|and|on|travel)\b|[.,!?]|$)",
+            r"\b([A-Za-z][A-Za-z\s]{1,30}?)\s+(?:to|→|->)\s+([A-Za-z][A-Za-z\s]{1,30}?)(?:\s+(?:via|by|and|on|travel)\b|[.,!?]|$)",
         ]
         for pat in patterns:
             m = re.search(pat, text, flags=re.IGNORECASE)
@@ -1480,12 +1504,168 @@ class ConversationAgent:
                 "",
                 dst,
                 flags=re.IGNORECASE,
-            ).strip(" .,")
+            ).strip(" .,?!")
             src = ConversationAgent._clean_place_name(src)
             dst = ConversationAgent._clean_place_name(dst)
             if ConversationAgent._is_plausible_place(src) and ConversationAgent._is_plausible_place(dst):
                 return src.title(), dst.title()
         return None, None
+
+    _SINGLE_PLACE_NOISE = {
+        "yes", "yeah", "yep", "yup", "ok", "okay", "sure", "please", "thanks",
+        "thank", "no", "nope", "nah", "read", "screen", "option", "options",
+        "tomorrow", "today", "yesterday", "hi", "hello", "hey", "skip",
+        "other", "personal", "work", "wedding", "tourism", "business",
+        "family", "just", "me", "one", "two", "three", "passenger", "passengers",
+    }
+
+    @staticmethod
+    def _parse_single_place(user_text: str) -> Optional[str]:
+        text = " ".join((user_text or "").strip().split()).strip(" .,!?")
+        if not text:
+            return None
+        hinted = re.search(
+            r"(?:meant|mean|to)\s+([A-Za-z][A-Za-z\s]{1,30})$",
+            text,
+            flags=re.IGNORECASE,
+        )
+        raw = hinted.group(1) if hinted else text
+        cleaned = ConversationAgent._clean_place_name(raw)
+        if not ConversationAgent._is_plausible_place(cleaned):
+            return None
+        if len(cleaned.split()) > 3:
+            return None
+        tokens = cleaned.lower().split()
+        if any(t in ConversationAgent._SINGLE_PLACE_NOISE for t in tokens):
+            return None
+        if ConversationAgent._parse_date_from_text(cleaned):
+            return None
+        return cleaned.title()
+
+    _EVENT_CITIES = (
+        "delhi",
+        "mumbai",
+        "bangalore",
+        "bengaluru",
+        "pune",
+        "hyderabad",
+        "chennai",
+        "kolkata",
+        "jaipur",
+        "goa",
+        "indore",
+        "bhopal",
+        "khandwa",
+        "nagpur",
+        "ahmedabad",
+        "kochi",
+        "lucknow",
+        "noida",
+        "gurgaon",
+        "gurugram",
+    )
+
+    _MONTH_TOKENS = {
+        "january", "jan", "february", "feb", "march", "mar", "april", "apr",
+        "may", "june", "jun", "july", "jul", "august", "aug", "september",
+        "sept", "sep", "october", "oct", "november", "nov", "december", "dec",
+    }
+
+    _GO_TO_RE = re.compile(
+        r"\b(?:go(?:ing)?(?:\s+to)?|visit(?:ing)?|travel(?:l?ing)?(?:\s+to)?|"
+        r"head(?:ing)?(?:\s+to)?)\s+"
+        r"([A-Za-z][A-Za-z\s]{1,24}?)(?:\s+(?:on|for|by|this|next|any|is|if|"
+        r"there|and|with)|[.,!?]|$)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _title_city(cls, city: str) -> str:
+        key = " ".join((city or "").strip().lower().split())
+        aliases = {
+            "bengaluru": "Bengaluru",
+            "bangalore": "Bangalore",
+            "gurgaon": "Gurugram",
+            "gurugram": "Gurugram",
+        }
+        if key in aliases:
+            return aliases[key]
+        return (city or "").strip().title()
+
+    @classmethod
+    def _city_from_text(cls, user_text: str) -> Optional[str]:
+        lowered = (user_text or "").lower()
+        for city in sorted(cls._EVENT_CITIES, key=len, reverse=True):
+            if re.search(rf"\b{re.escape(city)}\b", lowered):
+                return cls._title_city(city)
+        return None
+
+    @classmethod
+    def _parse_destination_mention(cls, user_text: str) -> Optional[str]:
+        src, dst = cls._parse_route_from_text(user_text)
+        if dst:
+            return dst
+        text = " ".join((user_text or "").strip().split())
+        m = cls._GO_TO_RE.search(text)
+        if m:
+            place = cls._clean_place_name(m.group(1))
+            place = re.sub(
+                r"\b(on|for|by|this|next|any|is|if|there)\b.*$",
+                "",
+                place,
+                flags=re.IGNORECASE,
+            ).strip(" .,?!")
+            if place.lower() in cls._EVENT_CITIES or cls._looks_like_city(place):
+                if cls._is_plausible_place(place):
+                    return cls._title_city(place)
+        city_alt = "|".join(sorted(cls._EVENT_CITIES, key=len, reverse=True))
+        in_city = re.search(rf"\b(?:in|at)\s+({city_alt})\b", text, flags=re.I)
+        if in_city:
+            return cls._title_city(in_city.group(1))
+        lowered = text.lower()
+        if re.search(
+            r"\b(go(?:ing)?|visit|travel|event|concert|festival|jana|jaana)\b",
+            lowered,
+        ):
+            city = cls._city_from_text(text)
+            if city:
+                from_m = re.search(r"\bfrom\s+([a-z]+)", lowered)
+                if from_m and from_m.group(1) == city.lower() and not src:
+                    return None
+                return city
+        return None
+
+    @classmethod
+    def _parse_origin_mention(
+        cls, user_text: str, destination: Optional[str] = None, *, allow_bare: bool = False
+    ) -> Optional[str]:
+        src, _dst = cls._parse_route_from_text(user_text)
+        if src:
+            return src
+        dest_key = (destination or "").strip().lower()
+        text = " ".join((user_text or "").strip().split())
+        m = re.search(
+            r"\b(?:from|i(?:'?m| am) (?:in|from)|starting (?:from|in))\s+"
+            r"([A-Za-z][A-Za-z\s]{1,24}?)(?:\s+(?:to|on|and|by)|[.,!?]|$)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            place = cls._clean_place_name(m.group(1))
+            if dest_key and place.lower() == dest_key:
+                return None
+            if place.lower() in cls._EVENT_CITIES or cls._looks_like_city(place):
+                return cls._title_city(place)
+        if not allow_bare:
+            return None
+        place = cls._parse_single_place(user_text)
+        if place and (
+            place.lower() in cls._EVENT_CITIES or cls._looks_like_city(place)
+        ):
+            if dest_key and place.lower() == dest_key:
+                return None
+            return cls._title_city(place)
+        return None
 
     _PLACE_NOISE = {
         "i", "we", "you", "me", "my", "a", "an", "the", "to", "from", "and",
@@ -1629,9 +1809,10 @@ class ConversationAgent:
             "only me": 1,
         }
         # Multi-word phrases first.
-        for phrase in ("just me", "only me"):
-            if phrase in text:
-                return 1
+        if re.search(r"\bfor me and\b", text):
+            pass
+        elif re.search(r"\b(just me|only me|for me)\b", text):
+            return 1
         # Normalize word numbers before digit regex.
         for word, num in words.items():
             if " " in word:
@@ -1639,8 +1820,8 @@ class ConversationAgent:
             text = re.sub(rf"\b{re.escape(word)}\b", str(num), text)
 
         patterns = (
-            r"\b(\d{1,4})\s*(?:passengers?|people|persons?|pax|members?|travelers?|travellers?)\b",
-            r"\b(?:passengers?|people|persons?|pax|members?)\s*(?:are\s*|is\s*|:\s*)?(\d{1,4})\b",
+            r"\b(\d{1,4})\s*(?:passengers?|people|persons?|pax|members?|travelers?|travellers?|guests?|tickets?)\b",
+            r"\b(?:passengers?|people|persons?|pax|members?|guests?)\s*(?:are\s*|is\s*|:\s*)?(\d{1,4})\b",
             r"\b(?:group of|party of|team of|we are|there are|total|only)\s*(\d{1,4})\b",
             r"^\s*(\d{1,4})\s*$",
         )
@@ -1701,10 +1882,15 @@ class ConversationAgent:
         lowered = (text or "").lower()
         return bool(
             re.search(
-                r"\b(events|concerts?|festivals?|comedy(?:\s+shows?)?|"
+                r"\b("
+                r"events|concerts?|festivals?|comedy(?:\s+shows?)?|"
                 r"book (?:an |a )?(?:show|event)|live show|"
                 r"what(?:'s| is| are)?(?: the)? events|"
-                r"any events)\b",
+                r"any events?|"
+                r"is there (?:an |any )?events?|"
+                r"events? (?:there|in|on|happening)|"
+                r"koi events?|event hai"
+                r")\b",
                 lowered,
             )
         )
@@ -1810,6 +1996,12 @@ class ConversationAgent:
         if src and dst:
             mem.source = src
             mem.destination = dst
+        dest = ConversationAgent._parse_destination_mention(user_text)
+        if dest and not (src and dst):
+            mem.destination = dest
+        origin = ConversationAgent._parse_origin_mention(user_text, mem.destination)
+        if origin and not src:
+            mem.source = origin
         date = ConversationAgent._parse_date_from_text(user_text)
         if date:
             mem.departure_date = date
@@ -1903,6 +2095,10 @@ class ConversationAgent:
             mem.party_type = "solo"
             mem.passenger_count = mem.passenger_count or 1
             mem.adult_count = mem.adult_count or 1
+        elif re.search(r"\bfor me\b", text) and not re.search(r"\bfor me and\b", text):
+            mem.party_type = mem.party_type or "solo"
+            mem.passenger_count = mem.passenger_count or 1
+            mem.adult_count = mem.adult_count or 1
         elif re.search(r"\b(honeymoon|with my (?:wife|husband|partner)|couple|two of us)\b", text):
             mem.party_type = "couple"
             mem.passenger_count = mem.passenger_count or 2
@@ -1938,6 +2134,16 @@ class ConversationAgent:
                 break
         if re.fullmatch(r"other[.!]?", text):
             mem.trip_purpose = "other"
+
+        names = ConversationAgent._extract_stated_passenger_names(user_text)
+        if names:
+            if not session.travelers:
+                session.travelers = [{"name": name} for name in names]
+            mem.passenger_name = mem.passenger_name or names[0]
+            mem.passenger_count = mem.passenger_count or len(names)
+            mem.adult_count = mem.adult_count or len(names)
+            if len(names) == 1:
+                mem.party_type = mem.party_type or "solo"
 
     @staticmethod
     def _parse_party_counts(
@@ -2020,12 +2226,24 @@ class ConversationAgent:
                 index, row = scored[min(1, len(scored) - 1)]
         return index + 1, row, priority
 
-    def _speak_options(
-        self, session: SessionState, rows: list[dict[str, Any]], kind: str
-    ) -> str:
+    def _reset_search_results(self, session: SessionState) -> None:
         mem = session.memory
-        option_n, picked, priority = self._recommend_option(rows, mem)
+        for key in ("trains", "flights", "hotels", "fares", "meals", "baggage", "addons"):
+            session.last_offerings.pop(key, None)
+        mem.selected_train_id = None
+        mem.selected_flight_id = None
+        mem.selected_hotel_id = None
+
+    def _recommend_sentence(
+        self, session: SessionState, rows: list[dict[str, Any]]
+    ) -> str:
+        option_n, picked, priority = self._recommend_option(rows, session.memory)
         label = picked.get("name") or picked.get("airline") or f"Option {option_n}"
+        number = str(picked.get("train_number") or "").strip()
+        if not number and re.fullmatch(r"\d{4,6}", str(picked.get("id") or "").strip()):
+            number = str(picked.get("id")).strip()
+        if number:
+            label = f"train {number}, {label}"
         price = picked.get("price_label") or ""
         why = {
             "price": "lowest fare",
@@ -2037,64 +2255,275 @@ class ConversationAgent:
             "balanced": "a balance of price and time",
         }.get(priority, "a solid overall fit")
         extra = f" {price}" if price else ""
-        route = f"from {mem.source} to {mem.destination}" if kind != "hotels" else f"in {mem.destination or mem.source}"
-        return (
-            f"{kind.title()} {route} are on your screen. "
-            f"I recommend Option {option_n} ({label}{extra}) for {why}. "
-            "Tell me which option you want."
+        return f"I recommend Option {option_n} ({label}{extra}) for {why}."
+
+    def _current_option_rows(
+        self, session: SessionState
+    ) -> tuple[list[dict[str, Any]], str]:
+        groups = [
+            ("flights", "flights"),
+            ("trains", "trains"),
+            ("hotels", "hotels"),
+            ("events", "events"),
+            ("fares", "fare types"),
+            ("meals", "meals"),
+            ("baggage", "baggage options"),
+            ("addons", "add-ons"),
+        ]
+        if session.memory.flow_step == "flight_extras":
+            groups = [
+                ("fares", "fare types"),
+                ("meals", "meals"),
+                ("baggage", "baggage options"),
+                ("addons", "add-ons"),
+            ] + groups
+        for key, label in groups:
+            rows = session.last_offerings.get(key) or []
+            if not isinstance(rows, list):
+                continue
+            items = [row for row in rows if isinstance(row, dict)]
+            if items:
+                return items, label
+        return [], ""
+
+    def _search_failed_reply(
+        self, kind: str, mem: Any, fail: str
+    ) -> str:
+        src = mem.source or "that origin"
+        dst = mem.destination or "that destination"
+        safe = friendly_travel_error(fail, fallback="")
+        looks_internal = (not safe) or "could not complete" in safe.lower()
+        if looks_internal:
+            extra = (
+                " Please say a nearby railway station — for example Bhopal, Indore, or Nagpur."
+                if kind == "trains"
+                else " Please try another city pair."
+            )
+            return f"I could not find {kind} from {src} to {dst}.{extra}"
+        return safe
+
+    def _speak_options(
+        self, session: SessionState, rows: list[dict[str, Any]], kind: str
+    ) -> str:
+        mem = session.memory
+        mem.flow_step = "options_offer"
+        rec = self._recommend_sentence(session, rows)
+        route = (
+            f"from {mem.source} to {mem.destination}"
+            if kind != "hotels"
+            else f"in {mem.destination or mem.source}"
         )
+        return (
+            f"{kind.title()} {route} are on your screen. {rec} "
+            "Shall I read them out, or will you pick from the screen?"
+        )
+
+    @staticmethod
+    def _wants_options_read(user_text: str) -> bool:
+        text = (user_text or "").strip().lower()
+        if re.search(r"\boption\s*\d+\b", text):
+            return False
+        if re.search(
+            r"\b("
+            r"screen|look(?:ing)?|i(?:'ll| will) (?:look|pick|see|choose)"
+            r"|don'?t read|do not read|no need to read"
+            r")\b",
+            text,
+        ) and not re.search(r"\bread\b", text):
+            return False
+        return bool(
+            re.search(
+                r"\b("
+                r"read(?:\s+them|\s+it|\s+all(?:\s+the)?(?:\s+options)?|\s+the options|\s+options|\s+the trains|\s+the flights|\s+the events?(?:'s)?(?:\s+names?)?|\s+(?:the )?(?:event|events)(?:'s)?(?:\s+names?)?)?"
+                r"|speak(?:\s+them|\s+it|\s+all|\s+the options|\s+options)"
+                r"|say (?:them|the options|all(?: the)? options|the (?:event )?names?)"
+                r"|tell me (?:all )?(?:the )?(?:options|trains|flights|events?|names?|details|timings?|times)"
+                r"|list (?:them|(?:all )?(?:the )?options)"
+                r"|whatever you have"
+                r"|out loud|aloud"
+                r"|(?:train |flight )?details"
+                r"|timings?"
+                r"|(?:train )?numbers?"
+                r"|what trains|which trains|available trains"
+                r")\b",
+                text,
+            )
+        )
+
+    @staticmethod
+    def _wants_screen_pick(user_text: str) -> bool:
+        text = (user_text or "").strip().lower()
+        if re.search(r"\boption\s*\d+\b", text):
+            return False
+        if re.search(r"\bread\b", text):
+            return False
+        return bool(
+            re.search(
+                r"\b("
+                r"screen"
+                r"|look(?:ing)?(?:\s+at(?:\s+them)?)?"
+                r"|see them|see it"
+                r"|i(?:'ll| will) (?:look|pick|see|choose)"
+                r"|pick (?:from|on) (?:the )?screen"
+                r"|no need to read"
+                r"|don'?t read|do not read"
+                r"|i can see"
+                r"|myself"
+                r")\b",
+                text,
+            )
+        )
+
+    def _handle_read_options(self, session: SessionState, user_text: str) -> Optional[str]:
+        mem = session.memory
+        if mem.flow_step in {
+            "phone",
+            "confirm",
+            "passengers",
+            "fix_name",
+            "await_phone_update",
+        } and not re.search(r"\bread\b", (user_text or "").lower()):
+            return None
+        rows, _kind = self._current_option_rows(session)
+        text = (user_text or "").strip().lower()
+        offering = mem.flow_step == "options_offer"
+        yes_read = offering and bool(
+            re.fullmatch(r"(yes|yeah|yep|yup|ok|okay|sure|please)[.!?]?", text)
+        )
+        no_screen = offering and self._user_said_no(user_text)
+        wants_read = self._wants_options_read(user_text) or yes_read
+        wants_screen = self._wants_screen_pick(user_text) or no_screen
+        if not wants_read and not wants_screen:
+            return None
+        if not rows:
+            if wants_read:
+                return "I don't have options on the screen yet. Tell me the cities and date first."
+            return None
+        rec = self._recommend_sentence(session, rows)
+        mem.flow_step = "pick"
+        if wants_screen and not wants_read:
+            return (
+                f"Okay, pick from the screen. {rec} "
+                "Tell me the option number."
+            )
+        spoken: list[str] = []
+        for item in rows:
+            spoken.append(self._format_spoken_option(len(spoken) + 1, item))
+            if len(spoken) >= 6:
+                break
+        return (
+            "Here they are. "
+            + ". ".join(spoken)
+            + f". {rec} Tell me which option number you want."
+        )
+
+    @staticmethod
+    def _looks_like_city(name: str) -> bool:
+        key = " ".join((name or "").lower().split())
+        return key in CITY_STATIONS or key in CITY_AIRPORTS
+
+    @staticmethod
+    def _speak_clock_time(raw: Any) -> str:
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        if re.search(r"\b(am|pm)\b", text, flags=re.I):
+            return text
+        match = re.match(r"^(\d{1,2}):(\d{2})(?::\d{2})?$", text)
+        if not match:
+            return text
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        suffix = "AM" if hour < 12 else "PM"
+        hour12 = hour % 12 or 12
+        return f"{hour12}:{minute:02d} {suffix}"
+
+    @staticmethod
+    def _speak_train_number(raw: Any) -> str:
+        text = str(raw or "").strip()
+        if re.fullmatch(r"\d{4,6}", text):
+            return " ".join(text)
+        return text
+
+    @staticmethod
+    def _speak_duration(raw: Any) -> str:
+        minutes = ConversationAgent._duration_minutes(raw)
+        if not minutes:
+            return ""
+        hours, mins = divmod(int(minutes), 60)
+        parts: list[str] = []
+        if hours:
+            parts.append(f"{hours} hour" if hours == 1 else f"{hours} hours")
+        if mins:
+            parts.append(f"{mins} minute" if mins == 1 else f"{mins} minutes")
+        return " ".join(parts)
+
+    @staticmethod
+    def _format_spoken_option(index: int, item: dict[str, Any]) -> str:
+        name = str(item.get("name") or item.get("airline") or f"option {index}").strip()
+        number = str(item.get("train_number") or "").strip()
+        if not number and re.fullmatch(r"\d{4,6}", str(item.get("id") or "").strip()):
+            number = str(item.get("id")).strip()
+        number_bit = ""
+        if number:
+            spoken_no = ConversationAgent._speak_train_number(number)
+            number_bit = f"train {spoken_no}, "
+        dep = ConversationAgent._speak_clock_time(item.get("departure_time") or "")
+        arr = ConversationAgent._speak_clock_time(item.get("arrival_time") or "")
+        when = ""
+        if dep and arr:
+            when = f", {dep} to {arr}"
+        elif dep:
+            when = f", {dep}"
+        duration = ConversationAgent._speak_duration(item.get("duration"))
+        dur_bit = f", {duration}" if duration else ""
+        price = str(item.get("price_label") or "").strip()
+        price_bit = f", {price}" if price else ""
+        return f"Option {index}, {number_bit}{name}{when}{dur_bit}{price_bit}"
 
     _EVENT_SEARCH_STOP = {
         "a", "about", "all", "an", "and", "any", "anything", "are", "around",
         "at", "available", "be", "book", "can", "coming", "comedy", "concert",
         "concerts", "could", "currently", "do", "event", "events", "everything",
         "festival", "festivals", "for", "from", "get", "give", "going", "got",
-        "have", "happening", "hello", "here", "hey", "hi", "how", "i", "im",
-        "in", "is", "just", "kind", "kinda", "know", "let", "like", "list",
-        "live", "looking", "me", "much", "many", "my", "near", "nearby", "need",
-        "next", "now", "number", "of", "ok", "okay", "on", "open", "option",
-        "or", "please", "running", "sabraah", "sabrah", "see", "should", "show",
-        "shows", "some", "something", "stuff", "tell", "thank", "thanks", "the",
-        "there", "these", "they", "thing", "things", "this", "those", "ticket",
-        "tickets", "to", "today", "tonight", "up", "us", "want", "wanna",
-        "was", "we", "weekend", "were", "what", "whats", "when", "where",
-        "which", "who", "whom", "whose", "why", "with", "would", "you",
-        "your", "youre",
+        "any", "concert", "concerts", "comedy", "date", "dates", "event",
+        "events", "festival", "festivals", "go", "going", "have", "happening",
+        "hello", "here", "hey", "hi", "how", "i", "im",
+        "in", "is", "jana", "jaana", "just", "kind", "kinda", "know", "let",
+        "like", "list", "live", "looking", "me", "much", "many", "my", "near",
+        "nearby", "need", "next", "now", "number", "of", "ok", "okay", "on",
+        "open", "option", "or", "please", "read", "repeat", "running",
+        "sabraah", "sabrah", "see", "should", "show", "shows", "some",
+        "something", "stuff", "tell", "thank", "thanks", "the", "there",
+        "these", "they", "thing", "things", "this", "those", "ticket",
+        "tickets", "to", "today", "tonight", "travel", "travelling",
+        "traveling", "up", "us", "visit", "visiting", "want", "wanna", "was",
+        "we", "weekend", "were", "what", "whats", "when", "where", "which",
+        "who", "whom", "whose", "why", "with", "would", "you", "your", "youre",
+        "name", "names", "aloud", "again",
     }
 
-    @staticmethod
-    def _event_search_args(user_text: str) -> dict[str, Any]:
+    @classmethod
+    def _event_search_args(cls, user_text: str) -> dict[str, Any]:
         text = (user_text or "").lower()
         if re.search(r"https?://|www\.|\.(?:com|org|net|in)\b", text):
             return {}
-        cities = (
-            "delhi",
-            "mumbai",
-            "bangalore",
-            "bengaluru",
-            "pune",
-            "hyderabad",
-            "chennai",
-            "kolkata",
-            "jaipur",
-            "goa",
-            "ahmedabad",
-            "kochi",
-            "lucknow",
-            "noida",
-            "gurgaon",
-            "gurugram",
+        city = next(
+            (name for name in cls._EVENT_CITIES if re.search(rf"\b{re.escape(name)}\b", text)),
+            None,
         )
-        city = next((name for name in cities if name in text), None)
         leftover = [
             tok
             for tok in re.findall(r"[a-z0-9]+", text)
-            if tok not in ConversationAgent._EVENT_SEARCH_STOP
+            if tok not in cls._EVENT_SEARCH_STOP
+            and tok not in cls._MONTH_TOKENS
+            and not re.fullmatch(r"\d{1,4}", tok)
+            and len(tok) > 2
             and tok != (city or "")
         ]
         args: dict[str, Any] = {}
         if city:
-            args["city"] = "Bengaluru" if city == "bengaluru" else city.title()
+            args["city"] = cls._title_city(city)
         if leftover and len(leftover) <= 5:
             args["search"] = " ".join(leftover)
         return args
@@ -2116,6 +2545,9 @@ class ConversationAgent:
             if start:
                 ticket_bits.append(f"from {start}")
         place = f" at {venue}" if venue else ""
+        city = str(event.get("city") or "").strip()
+        if city and city.lower() not in venue.lower():
+            place = f"{place} in {city}" if place else f" in {city}"
         time_bit = f" on {when}" if when else ""
         tickets_bit = f" Tickets: {', '.join(ticket_bits)}." if ticket_bits else ""
         return (
@@ -2181,6 +2613,43 @@ class ConversationAgent:
 
     @staticmethod
     def _wants_event_info(user_text: str) -> bool:
+        text = (user_text or "").lower()
+        if any(
+            skip in text
+            for skip in ("yourself", "your name", "who you", "who are you")
+        ):
+            return False
+        return any(
+            hint in text
+            for hint in (
+                "about",
+                "detail",
+                "tell me",
+                "batao",
+                "bataao",
+                "bare",
+                "baare",
+                "baaray",
+                "info",
+                "information",
+                "बताओ",
+                "बारे",
+            )
+        )
+
+    @staticmethod
+    def _wants_event_list_read(user_text: str) -> bool:
+        text = (user_text or "").strip().lower()
+        if re.search(r"\boption\s*\d+\b", text):
+            return False
+        if ConversationAgent._wants_options_read(user_text) and re.search(
+            r"\b(event|events|name|names)\b", text
+        ):
+            return True
+        return bool(
+            re.search(r"\bread\b", text)
+            and re.search(r"\b(event|events|name|names|them|list)\b", text)
+        )
         text = (user_text or "").lower()
         if any(
             skip in text
@@ -2294,13 +2763,17 @@ class ConversationAgent:
         ) or ConversationAgent._user_said_yes(user_text)
 
     _EVENT_GUEST_SKIP = {
-        "a", "an", "and", "ask", "at", "book", "booking", "can", "collect",
-        "dot", "eight", "event", "events", "female", "first", "five", "for",
-        "four", "fourth", "gmail", "guest", "guests", "guy", "guys", "in",
-        "is", "it", "male", "me", "music", "my", "name", "names", "nine",
-        "of", "one", "other", "people", "person", "please", "second", "seven",
-        "six", "such", "take", "ten", "the", "this", "that", "third", "three",
-        "two", "uh", "um", "user", "users", "want", "yeah", "yes", "you",
+        "a", "an", "and", "ask", "at", "august", "birth", "born", "book",
+        "booking", "can", "collect", "com", "date", "dob", "dot", "eight",
+        "email", "event", "events", "female", "first", "five", "for", "four",
+        "fourth", "from", "gender", "gmail", "guest", "guests", "guy", "guys",
+        "in", "is", "it", "january", "july", "june", "mail", "male", "me",
+        "mobile", "music", "my", "name", "names", "nine", "number", "numbers",
+        "of", "one", "other", "people", "person", "phone", "please", "second",
+        "seven", "six", "such", "take", "ten", "the", "this", "that", "third",
+        "three", "to", "two", "uh", "um", "user", "users", "want", "yeah",
+        "yes", "you",
+        *list(_MONTH_TOKENS),
     }
 
     @staticmethod
@@ -2337,8 +2810,80 @@ class ConversationAgent:
     def _parse_event_phone(user_text: str) -> Optional[str]:
         stripped = re.sub(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", " ", user_text or "")
         stripped = re.sub(r"\b(?:19|20)\d{2}\b", " ", stripped)
-        match = re.search(r"(?:\+91[\s-]*)?(\d{10})\b", stripped)
-        return match.group(1) if match else None
+        compact = re.sub(r"(?<=\d)[\s.-]+(?=\d)", "", stripped)
+        match = re.search(r"(?:\+91[\s-]*)?(0)?(\d{10})\b", compact)
+        return match.group(2) if match else None
+
+    @staticmethod
+    def _looks_like_guest_details(user_text: str) -> bool:
+        text = (user_text or "").lower()
+        if re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text):
+            return True
+        if ConversationAgent._parse_event_phone(user_text):
+            return True
+        if ConversationAgent._parse_event_gender(user_text):
+            return True
+        if ConversationAgent._parse_event_dob(user_text):
+            return True
+        return bool(
+            re.search(
+                r"\b(email|e-mail|phone|mobile|gender|date of birth|dob|birth)\b",
+                text,
+            )
+        )
+
+    @classmethod
+    def _is_person_name_token(cls, token: str) -> bool:
+        key = (token or "").strip(" .,").lower()
+        if not key or key in cls._EVENT_GUEST_SKIP:
+            return False
+        if key in cls._EVENT_CITIES or cls._looks_like_city(key):
+            return False
+        if key in cls._MONTH_TOKENS:
+            return False
+        return key.isalpha() or bool(re.fullmatch(r"[a-z][a-z'.-]+", key))
+
+    @staticmethod
+    def _parse_event_guest_names(user_text: str) -> list[str]:
+        text = user_text or ""
+        lowered = text.lower()
+        if ConversationAgent._looks_like_guest_details(text) and not re.search(
+            r"\b(?:my name is|names? are|guest(?:s)?\s+(?:is|are)|i am|first one is|second one is)\b",
+            lowered,
+        ):
+            return []
+        asking_only = re.search(
+            r"\b(ask|collect|take|need|want)\b.*\b(name|names)\b",
+            lowered,
+        ) and not re.search(
+            r"\b(?:my name is|names? are|guest(?:s)?\s+(?:is|are)|i am|first one is|second one is)\b",
+            lowered,
+        )
+        if asking_only:
+            return []
+        cleaned = re.sub(
+            r"\b(?:first|second|third|fourth|1st|2nd|3rd|4th)\s*(?:one|guest|person|guy)?\s*(?:is|:)\s*",
+            ", ",
+            text,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\b(?:one|two|three|four|five|six)?\s*(?:guys|guests|people|persons)\b",
+            " ",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        names: list[str] = []
+        for name in ConversationAgent._parse_passenger_names(cleaned):
+            parts = [
+                part
+                for part in name.split()
+                if ConversationAgent._is_person_name_token(part)
+            ]
+            if not parts or len(parts) > 4:
+                continue
+            names.append(" ".join(parts))
+        return names
 
     @staticmethod
     def _parse_event_dob(user_text: str) -> Optional[str]:
@@ -2366,43 +2911,6 @@ class ConversationAgent:
         if stamp >= today:
             return None
         return parsed
-
-    @staticmethod
-    def _parse_event_guest_names(user_text: str) -> list[str]:
-        text = user_text or ""
-        lowered = text.lower()
-        asking_only = re.search(
-            r"\b(ask|collect|take|need|want)\b.*\b(name|names)\b",
-            lowered,
-        ) and not re.search(
-            r"\b(?:my name is|names? are|guest(?:s)?\s+(?:is|are)|i am|first one is|second one is)\b",
-            lowered,
-        )
-        if asking_only:
-            return []
-        cleaned = re.sub(
-            r"\b(?:first|second|third|fourth|1st|2nd|3rd|4th)\s*(?:one|guest|person|guy)?\s*(?:is|:)\s*",
-            ", ",
-            text,
-            flags=re.IGNORECASE,
-        )
-        cleaned = re.sub(
-            r"\b(?:two|three|four|five|six)?\s*(?:guys|guests|people|persons)\b",
-            " ",
-            cleaned,
-            flags=re.IGNORECASE,
-        )
-        names: list[str] = []
-        for name in ConversationAgent._parse_passenger_names(cleaned):
-            parts = [
-                part
-                for part in name.split()
-                if part.lower() not in ConversationAgent._EVENT_GUEST_SKIP
-            ]
-            if len(parts) < 2 or len(parts) > 4:
-                continue
-            names.append(" ".join(parts))
-        return names
 
     @staticmethod
     def _guest_missing_fields(guest: dict[str, Any]) -> list[str]:
@@ -2441,13 +2949,29 @@ class ConversationAgent:
 
     def _ask_event_guest_details(self, guest: dict[str, Any], index: int) -> str:
         missing = self._guest_missing_fields(guest)
-        name = str(guest.get("name") or f"guest {index + 1}")
-        if missing == ["full name"] or "full name" in missing and len(missing) == 1:
+        first, last = self._split_full_name(str(guest.get("name") or ""))
+        first = str(guest.get("first_name") or first)
+        last = str(guest.get("last_name") or last)
+        name = " ".join(part for part in (first, last) if part) or f"guest {index + 1}"
+        examples = {
+            "full name": "Rahul Sharma",
+            "email": "name@gmail.com",
+            "10-digit phone": "9876543210",
+            "gender": "male or female",
+            "date of birth": "12 January 1990",
+        }
+        if missing == ["full name"] and first and not last:
+            return f"Got {first}. Please say the last name."
+        if missing == ["full name"]:
             return f"Please say the first and last name for guest {index + 1}."
-        return (
-            f"For {name}, please say {', '.join(missing)}. "
-            "For example: name@gmail.com, 9876543210, male, 12 January 1990."
-        )
+        asked = ", ".join(missing)
+        sample = examples.get(missing[0], "")
+        sample_bit = f" For example: {sample}." if sample and len(missing) == 1 else ""
+        if len(missing) > 1:
+            sample_bit = (
+                " For example: name@gmail.com, 9876543210, male, 12 January 1990."
+            )
+        return f"For {name}, please say {asked}.{sample_bit}"
 
     def _collect_event_guests(self, session: SessionState, user_text: str) -> str:
         mem = session.memory
@@ -2456,44 +2980,69 @@ class ConversationAgent:
         if count:
             mem.passenger_count = max(1, min(int(count), 10))
 
-        have = len([item for item in session.travelers if item.get("name")])
+        details_only = self._looks_like_guest_details(user_text)
+        have = len(
+            [
+                item
+                for item in session.travelers
+                if item.get("name") or item.get("first_name") or item.get("email")
+            ]
+        )
         need = mem.passenger_count or 0
         collecting_names = have == 0 or (need and have < need)
-        if collecting_names or self._wants_event_correction(user_text):
+        if collecting_names and not details_only:
             parsed_names = self._parse_event_guest_names(user_text)
-            if collecting_names:
-                for name in parsed_names:
-                    if name.lower() in {
-                        str(item.get("name") or "").lower() for item in session.travelers
-                    }:
-                        continue
-                    first, last = self._split_full_name(name)
-                    session.travelers.append(
-                        {"name": name, "first_name": first, "last_name": last}
-                    )
-            elif parsed_names:
-                target = session.travelers[0] if session.travelers else None
+            for name in parsed_names:
+                if name.lower() in {
+                    str(item.get("name") or "").lower() for item in session.travelers
+                }:
+                    continue
+                first, last = self._split_full_name(name)
+                session.travelers.append(
+                    {"name": name, "first_name": first, "last_name": last}
+                )
+        elif self._wants_event_correction(user_text):
+            parsed_names = self._parse_event_guest_names(user_text)
+            if parsed_names and session.travelers:
+                target = session.travelers[0]
                 spoken = user_text.lower()
                 for item in session.travelers:
                     item_name = str(item.get("name") or "").lower()
                     if item_name and item_name.split()[0] in spoken:
                         target = item
                         break
-                if target is not None:
-                    name = parsed_names[0]
-                    first, last = self._split_full_name(name)
-                    target["name"] = name
-                    target["first_name"] = first
-                    target["last_name"] = last
+                name = parsed_names[0]
+                first, last = self._split_full_name(name)
+                target["name"] = name
+                target["first_name"] = first
+                target["last_name"] = last
 
-        have = len([item for item in session.travelers if item.get("name")])
+        have = len(
+            [
+                item
+                for item in session.travelers
+                if item.get("name") or item.get("first_name")
+            ]
+        )
         need = mem.passenger_count or have
         skip_names = bool(re.search(r"\b(skip|later|open(?: the)?(?: page| booking)?)\b", text))
+        if have == 0 and details_only:
+            mem.passenger_count = mem.passenger_count or 1
+            session.travelers.append({"name": "", "first_name": "", "last_name": ""})
+            self._apply_event_guest_details(session.travelers[0], user_text)
+            mem.flow_step = "event_guests"
+            return self._ask_event_guest_details(session.travelers[0], 0)
         if have == 0 and skip_names:
             mem.flow_step = "event_open"
             return "Opening the booking page. You can fill guest details there."
         if have == 0:
             mem.flow_step = "event_guests"
+            if mem.passenger_count:
+                who = "guest" if mem.passenger_count == 1 else "guests"
+                return (
+                    f"Got {mem.passenger_count} {who}. "
+                    "Please say the first and last name."
+                )
             return (
                 "How many guests, and their full names? "
                 "For example: two guests, Rahul Sharma and Priya Verma."
@@ -2512,6 +3061,19 @@ class ConversationAgent:
                 break
         if current is not None:
             self._apply_event_guest_details(current, user_text)
+            if "full name" in self._guest_missing_fields(current):
+                parsed_names = self._parse_event_guest_names(user_text)
+                if parsed_names:
+                    extra = parsed_names[0]
+                    first = str(current.get("first_name") or "").strip()
+                    last = str(current.get("last_name") or "").strip()
+                    extra_parts = extra.split()
+                    if first and not last and extra.lower() != first.lower():
+                        current["last_name"] = extra
+                        current["name"] = f"{first} {extra}".strip()
+                    elif len(extra_parts) >= 2:
+                        current["name"] = extra
+                        current["first_name"], current["last_name"] = self._split_full_name(extra)
             if self._guest_missing_fields(current):
                 mem.flow_step = "event_guests"
                 return self._ask_event_guest_details(current, current_index)
@@ -2528,7 +3090,8 @@ class ConversationAgent:
 
         mem.flow_step = "event_open"
         named = ", ".join(
-            str(item.get("name")) for item in session.travelers if item.get("name")
+            str(item.get("name") or item.get("first_name") or "guest")
+            for item in session.travelers
         )
         return (
             f"Opening booking for {named}. "
@@ -2632,8 +3195,82 @@ class ConversationAgent:
             event = fallback or {}
         session.memory.selected_event_id = str(event.get("id") or event_id)
         session.memory.event_name = event.get("name")
+        city = str(event.get("city") or "").strip()
+        if city:
+            session.memory.destination = session.memory.destination or city
         session.memory.flow_step = "event_confirm"
-        return self._event_choice_speech(event)
+        speech = self._event_choice_speech(event)
+        train_bit = await self._attach_trains_to_event_city(
+            session, tools_used, city
+        )
+        if train_bit:
+            return f"{speech} {train_bit}"
+        return speech
+
+    async def _attach_destination_events(
+        self, session: SessionState, tools_used: list[str], city: str
+    ) -> str:
+        result = await self._tools.execute(
+            "search_events",
+            {"city": city},
+            session_id=session.session_id,
+            user_access_token=session.user_access_token,
+        )
+        if not isinstance(result, dict) or result.get("error"):
+            return ""
+        rows = [row for row in (result.get("results") or []) if isinstance(row, dict)]
+        if not rows:
+            return ""
+        tools_used.append("search_events")
+        session.last_offerings["events"] = rows
+        session.memory.event_required = True
+        names = ", ".join(str(row.get("name") or "event") for row in rows[:3])
+        return (
+            f"Super Travel also has events in {city}: {names}. "
+            "Say the event name if you want tickets."
+        )
+
+    async def _attach_trains_to_event_city(
+        self, session: SessionState, tools_used: list[str], city: str
+    ) -> str:
+        mem = session.memory
+        city = (city or mem.destination or "").strip()
+        if not city:
+            return ""
+        origin = mem.source
+        if not origin:
+            return (
+                f"If you want trains for {city}, tell me which city you are travelling from."
+            )
+        if origin.lower() == city.lower():
+            return f"{city} is your origin, so you may not need a long-distance train."
+        if not mem.departure_date:
+            from datetime import datetime, timedelta
+
+            mem.departure_date = (
+                datetime.now().astimezone().date() + timedelta(days=1)
+            ).isoformat()
+        args = {
+            "source": origin,
+            "destination": city,
+            "departure_date": mem.departure_date,
+            "passengers": min(int(mem.passenger_count or mem.adult_count or 1), 9),
+        }
+        result = await self._tools.execute(
+            "search_trains", args, session_id=session.session_id
+        )
+        tools_used.append("search_trains")
+        self._update_memory_from_tool(session, "search_trains", args, result)
+        rows = result.get("results") if isinstance(result, dict) else None
+        if not rows:
+            return f"I could not find trains from {origin} to {city} for this event."
+        rec = self._recommend_sentence(session, rows)
+        when = mem.departure_date or "that date"
+        return (
+            f"Trains from {origin} to {city} on {when} are on your screen. {rec} "
+            "Shall I read the trains, or will you pick from the screen? "
+            "You can also say an event name to book tickets."
+        )
 
     async def _handle_event_flow(
         self, session: SessionState, user_text: str, tools_used: list[str]
@@ -2643,10 +3280,13 @@ class ConversationAgent:
         if mem.user_goal != "book_event" and mem.booking_mode != "event":
             if not self._is_event_intent(text):
                 return None
-            mem.user_goal = "book_event"
-            mem.booking_mode = "event"
-            mem.intent = "book"
-            mem.flow_step = "event_search"
+            if mem.user_goal in {"book_train", "book_flight"}:
+                mem.event_required = True
+            else:
+                mem.user_goal = "book_event"
+                mem.booking_mode = "event"
+                mem.intent = "book"
+                mem.flow_step = "event_search"
 
         events = [
             item
@@ -2688,6 +3328,28 @@ class ConversationAgent:
 
         is_followup = self._is_event_followup(user_text, events)
 
+        if events and self._wants_event_list_read(user_text):
+            return self._speak_event_names(events)
+
+        if events and mem.flow_step == "event_pick":
+            origin = self._parse_origin_mention(
+                user_text, mem.destination, allow_bare=True
+            )
+            if (
+                origin
+                and not self._wants_event_info(user_text)
+                and not self._wants_event_book(user_text)
+                and self._match_event_mention(user_text, events) is None
+                and not self._is_event_intent(user_text)
+            ):
+                mem.source = origin
+                city = mem.destination or str(events[0].get("city") or "").strip()
+                train_bit = await self._attach_trains_to_event_city(
+                    session, tools_used, city
+                )
+                if train_bit:
+                    return train_bit
+
         if events:
             if self._wants_event_book(user_text):
                 chosen = self._match_event_mention(user_text, events)
@@ -2711,12 +3373,26 @@ class ConversationAgent:
                 )
             matched = self._match_event_mention(user_text, events)
             if matched is not None:
-                return await self._load_event_details(
-                    session, str(matched.get("id") or ""), tools_used, matched
+                option_only = bool(
+                    re.search(
+                        r"^(?:option|number|no|train)?\s*\d+[.]?$",
+                        text.strip(" .,!?"),
+                    )
                 )
+                if not (
+                    option_only and session.last_offerings.get("trains")
+                ):
+                    return await self._load_event_details(
+                        session, str(matched.get("id") or ""), tools_used, matched
+                    )
             if mem.flow_step == "event_pick":
                 if self._wants_event_info(user_text):
                     return "Which event? Please say the event name, like tell me about, then the name."
+                if (
+                    session.last_offerings.get("trains")
+                    and re.search(r"\b(?:option|number|no)\s*\d+\b", text)
+                ):
+                    return None
                 if is_followup:
                     return "Say tell me about, then the event name."
                 return None
@@ -2724,20 +3400,27 @@ class ConversationAgent:
         if not is_followup and mem.flow_step != "event_search":
             return None
 
-        should_search = not events or any(
+        if self._wants_event_list_read(user_text):
+            if events:
+                return self._speak_event_names(events)
+            return None
+
+        search_args = self._event_search_args(user_text)
+        explicit_new = any(
             key in text
-            for key in (
-                "search",
-                "find",
-                "show me",
-                "another",
-                "other event",
-            )
-        ) or bool(self._event_search_args(user_text).get("city") or self._event_search_args(user_text).get("search"))
+            for key in ("search", "find", "show me", "another", "other event")
+        )
+        should_search = not events or explicit_new or bool(
+            search_args.get("city") or search_args.get("search")
+        )
         if not should_search:
             return None
 
         args = self._event_search_args(user_text)
+        if not args.get("city") and mem.destination:
+            args["city"] = mem.destination
+        if args.get("city"):
+            mem.destination = mem.destination or str(args["city"])
         result = await self._tools.execute(
             "search_events",
             args,
@@ -2750,9 +3433,23 @@ class ConversationAgent:
             return result.get("message") or "I could not load events right now."
         rows = result.get("results") if isinstance(result, dict) else None
         mem.flow_step = "event_pick"
+        city = str(args.get("city") or mem.destination or "").strip()
+        train_bit = await self._attach_trains_to_event_city(
+            session, tools_used, city
+        )
         if not rows:
-            return "I did not find matching events. Try another city, artist, or event name."
-        return self._speak_event_names(rows)
+            base = (
+                f"I did not find matching events in {city}."
+                if city
+                else "I did not find matching events. Try another city, artist, or event name."
+            )
+            if train_bit:
+                return f"{base} {train_bit}"
+            return base
+        speech = self._speak_event_names(rows)
+        if train_bit:
+            return f"{speech} {train_bit}"
+        return speech
 
     @staticmethod
     def _user_said_no(user_text: str) -> bool:
@@ -2906,12 +3603,39 @@ class ConversationAgent:
 
             src, dst = self._parse_route_from_text(user_text)
             if src and dst:
+                if mem.source and mem.destination and (
+                    mem.source.lower() != src.lower()
+                    or mem.destination.lower() != dst.lower()
+                ):
+                    self._reset_search_results(session)
                 mem.source = src
                 mem.destination = dst
             if mem.source:
                 mem.source = self._clean_place_name(mem.source).title()
             if mem.destination:
                 mem.destination = self._clean_place_name(mem.destination).title()
+            place = self._parse_single_place(user_text)
+            if place and mem.source and not (src and dst):
+                if not mem.destination:
+                    mem.destination = place
+                elif (
+                    place.lower() not in {mem.source.lower(), mem.destination.lower()}
+                    and self._looks_like_city(place)
+                ):
+                    self._reset_search_results(session)
+                    mem.destination = place
+
+            dest_key = (mem.destination or "").lower()
+            if dest_key in self._AMBIGUOUS_STATIONS:
+                hints = self._AMBIGUOUS_STATIONS[dest_key]
+                ambiguous = mem.destination
+                mem.destination = None
+                mem.flow_step = "where"
+                self._reset_search_results(session)
+                return (
+                    f"I don't have a station named {ambiguous}. "
+                    f"Did you mean {hints[0]}, {hints[1]}, or another city?"
+                )
             date = self._parse_date_from_text(user_text)
             if date:
                 mem.departure_date = date
@@ -2958,6 +3682,16 @@ class ConversationAgent:
             if mem.source and mem.destination and mem.departure_date and mem.passenger_count and not mem.trip_purpose:
                 if mem.party_type in {"family", "business"}:
                     mem.trip_purpose = mem.party_type
+                elif (
+                    mem.user_goal in {"book_train", "book_flight"}
+                    and self._parse_route_from_text(user_text)[0]
+                    and self._parse_date_from_text(user_text)
+                    and (
+                        self._parse_passenger_count(user_text)
+                        or self._extract_stated_passenger_names(user_text)
+                    )
+                ):
+                    mem.trip_purpose = "other"
                 else:
                     return self._show_purpose_menu(session)
 
@@ -3019,16 +3753,29 @@ class ConversationAgent:
                 self._update_memory_from_tool(session, tool_name, args, result)
                 rows = result.get("results") if isinstance(result, dict) else None
                 if rows:
-                    return self._speak_options(session, rows, kind)
+                    speech = self._speak_options(session, rows, kind)
+                    if kind == "trains" and mem.destination:
+                        extra = await self._attach_destination_events(
+                            session, tools_used, mem.destination
+                        )
+                        if extra:
+                            speech = f"{speech} {extra}"
+                    return speech
+                if isinstance(result, dict) and result.get("error") == "travel_unavailable":
+                    return (
+                        "I cannot reach the travel service right now. "
+                        "Please try again in a moment."
+                    )
                 fail = ""
                 if isinstance(result, dict):
                     fail = str(result.get("message") or "")
-                return (
-                    fail
-                    or f"I could not find {kind} for that route. Please try another city pair."
-                )
+                return self._search_failed_reply(kind, mem, fail)
 
         return None
+
+    _AMBIGUOUS_STATIONS = {
+        "gopal": ("Bhopal", "Gopalganj"),
+    }
 
     _INTERNATIONAL_PLACES = {
         "europe", "dubai", "uae", "switzerland", "paris", "london", "singapore",
@@ -3319,6 +4066,39 @@ class ConversationAgent:
             }:
                 continue
             names.append(" ".join(w.capitalize() for w in name.split()))
+        return names
+
+    _NAME_STOP = {
+        "going", "from", "to", "want", "looking", "booking", "here", "available",
+        "ready", "coming", "trying", "planning", "a", "the", "in", "on", "at",
+        "not", "also", "just", "still", "already",
+    }
+
+    @staticmethod
+    def _extract_stated_passenger_names(user_text: str) -> list[str]:
+        names: list[str] = []
+        for match in re.finditer(
+            r"\b(?:i am|i['’]m|i m|my name is|name is|this is)\s+"
+            r"([A-Za-z][A-Za-z'.-]{1,30}(?:\s+[A-Za-z][A-Za-z'.-]{1,30}){0,2})",
+            user_text or "",
+            flags=re.IGNORECASE,
+        ):
+            tokens: list[str] = []
+            for tok in match.group(1).replace(".", " ").split():
+                key = tok.lower().strip(" .,")
+                if (
+                    not key
+                    or key in ConversationAgent._NAME_STOP
+                    or key in ConversationAgent._PLACE_NOISE
+                    or ConversationAgent._looks_like_city(key)
+                ):
+                    break
+                tokens.append(tok)
+            if not tokens:
+                continue
+            name = " ".join(w.capitalize() for w in tokens)
+            if len(name) >= 2:
+                names.append(name)
         return names
 
     def _ask_next_passenger(self, session: SessionState) -> str:
@@ -4471,7 +5251,10 @@ class ConversationAgent:
     ) -> Optional[str]:
         mem = session.memory
         if mem.booking_mode not in {None, "normal", "flight"}:
-            return None
+            if not (
+                mem.booking_mode == "event" and session.last_offerings.get("trains")
+            ):
+                return None
         if (
             mem.user_goal == "book_flight"
             or mem.transport_type == "flight"

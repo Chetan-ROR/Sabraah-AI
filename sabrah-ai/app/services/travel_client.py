@@ -66,6 +66,7 @@ CITY_STATIONS: dict[str, str] = {
     "bangalore": "SBC",
     "bengaluru": "SBC",
     "goa": "MAO",
+    "gopalganj": "GOP",
 }
 
 CABIN_MAP = {
@@ -81,11 +82,32 @@ CABIN_MAP = {
 }
 
 
+_GENERIC_BACKEND_MESSAGES = (
+    "an unexpected server error occurred",
+    "internal server error",
+    "travel service returned an error",
+    "something went wrong",
+    "server error",
+)
+
+
+def friendly_travel_error(
+    message: str,
+    *,
+    fallback: str = "I could not complete that travel search right now.",
+) -> str:
+    text = " ".join(str(message or "").split()).strip()
+    lowered = text.lower().rstrip(".")
+    if not text or lowered in _GENERIC_BACKEND_MESSAGES or "unexpected server error" in lowered:
+        return fallback
+    return text
+
+
 class TravelBackendError(Exception):
     def __init__(self, message: str, *, code: str = "travel_backend_error") -> None:
         super().__init__(message)
         self.code = code
-        self.user_message = message
+        self.user_message = friendly_travel_error(message)
 
 
 class TravelBackendClient:
@@ -131,7 +153,10 @@ class TravelBackendClient:
                 or payload.get("error")
                 or "Travel service returned an error."
             )
-            raise TravelBackendError(str(message), code="travel_http_error")
+            raise TravelBackendError(
+                friendly_travel_error(str(message)),
+                code="travel_http_error",
+            )
         data = payload.get("data", payload)
         if isinstance(data, list):
             return {
@@ -215,7 +240,10 @@ class TravelBackendClient:
                     )
             except Exception:  # noqa: BLE001
                 pass
-            raise TravelBackendError(detail, code="travel_http_error")
+            raise TravelBackendError(
+                friendly_travel_error(detail),
+                code="travel_http_error",
+            )
 
         try:
             data = response.json()
@@ -307,4 +335,10 @@ class TravelBackendClient:
                 code="station_not_found",
             )
         first = rows[0] if isinstance(rows[0], dict) else {}
-        return str(first.get("code") or first.get("station_code") or "").upper() or upper
+        code = str(first.get("code") or first.get("station_code") or "").upper()
+        if not re.fullmatch(r"[A-Z]{2,5}", code):
+            raise TravelBackendError(
+                f"I could not find a station for {raw}.",
+                code="station_not_found",
+            )
+        return code

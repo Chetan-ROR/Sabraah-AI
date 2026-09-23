@@ -64,6 +64,7 @@ class TravelSlotMemory(BaseModel):
     budget: Optional[float] = None
     hotel_required: Optional[bool] = None
     flight_required: Optional[bool] = None
+    event_required: Optional[bool] = None
     local_transport_required: Optional[bool] = None
     selected_option: Optional[str] = None
     selected_train_id: Optional[str] = None

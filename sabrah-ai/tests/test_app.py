@@ -86,6 +86,7 @@ class FakeTravelClient(TravelBackendClient):
         self.calls: List[Tuple[str, str, Optional[dict]]] = []
         self.available = True
         self.raise_unavailable = False
+        self.generic_error = False
 
     async def request(
         self,
@@ -101,6 +102,11 @@ class FakeTravelClient(TravelBackendClient):
         self.calls.append((method, path, json or params))
         if self.raise_unavailable:
             raise TravelBackendError("down", code="travel_unavailable")
+        if self.generic_error:
+            raise TravelBackendError(
+                "An unexpected server error occurred.",
+                code="travel_http_error",
+            )
         if path in {"/api/v1/trains/search", "/api/v1/trains/train-list/"}:
             origin = (json or params or {}).get("source") or (params or {}).get("origin")
             dest = (json or params or {}).get("destination") or (params or {}).get(
@@ -109,13 +115,15 @@ class FakeTravelClient(TravelBackendClient):
             return {
                 "results": [
                     {
-                        "id": "TRAIN-001",
-                        "name": "Rajdhani Express",
-                        "train_name": "Rajdhani Express",
-                        "train_number": "TRAIN-001",
+                        "id": "51683",
+                        "name": "KNW-BIR PASSENGER",
+                        "train_name": "KNW-BIR PASSENGER",
+                        "train_number": "51683",
                         "source": origin or "Delhi",
                         "destination": dest or "Mumbai",
-                        "departure_time": "16:55",
+                        "departure_time": "08:10:00",
+                        "arrival_time": "09:10:00",
+                        "running_time": "1h 0m",
                         "price": 1850,
                         "currency": "INR",
                     }
@@ -455,75 +463,54 @@ def test_elevenlabs_failure_still_returns_text(client) -> None:
     assert data["tts_error"]
 
 
+def _book_train_until_search(test_client, session: str, route: str = "Delhi to Mumbai"):
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Hi Sabrah"},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Book a train"},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": route},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Tomorrow."},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "One passenger."},
+    )
+    return test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Other."},
+    )
+
+
 def test_tool_calling_search_trains(client) -> None:
     test_client, stack = client
     session = test_client.post("/api/v1/sessions").json()["session_id"]
-    stack["llm"].enqueue(
-        SimpleNamespace(
-            content=None,
-            tool_calls=[
-                _tool_call(
-                    "search_trains",
-                    {
-                        "source": "Delhi",
-                        "destination": "Mumbai",
-                        "departure_date": "2026-08-21",
-                    },
-                )
-            ],
-        )
-    )
-    stack["llm"].enqueue(
-        SimpleNamespace(
-            content="I found a Rajdhani Express leaving at 4:55 PM.",
-            tool_calls=None,
-        )
-    )
-    response = test_client.post(
-        "/api/v1/chat/text",
-        json={
-            "session_id": session,
-            "message": "Delhi se Mumbai kal ki train dikhao.",
-        },
-    )
+    response = _book_train_until_search(test_client, session)
     assert response.status_code == 200
     data = response.json()
     assert "search_trains" in data["tools_used"]
     assert stack["travel"].calls
-    assert stack["travel"].calls[0][1] == "/api/v1/trains/train-list/"
+    assert any(path == "/api/v1/trains/train-list/" for _, path, _ in stack["travel"].calls)
     assert data["memory"]["source"] == "Delhi"
     assert data["memory"]["destination"] == "Mumbai"
+    text = data["assistant_text"].lower()
+    assert "recommend" in text
+    assert "read them out" in text or "pick from the screen" in text
 
 
 def test_backend_unavailable(client) -> None:
     test_client, stack = client
     stack["travel"].raise_unavailable = True
     session = test_client.post("/api/v1/sessions").json()["session_id"]
-    stack["llm"].enqueue(
-        SimpleNamespace(
-            content=None,
-            tool_calls=[
-                _tool_call(
-                    "search_trains",
-                    {
-                        "source": "Delhi",
-                        "destination": "Mumbai",
-                        "departure_date": "2026-08-21",
-                    },
-                )
-            ],
-        )
-    )
-    stack["llm"].enqueue(
-        SimpleNamespace(
-            content="I cannot reach the travel service right now.",
-            tool_calls=None,
-        )
-    )
-    response = test_client.post(
-        "/api/v1/chat/text",
-        json={"session_id": session, "message": "Show trains"},
-    )
+    response = _book_train_until_search(test_client, session)
     assert response.status_code == 200
     assert "cannot reach" in response.json()["assistant_text"].lower()
 
@@ -897,3 +884,231 @@ def test_session_store_unit() -> None:
         assert reset.memory.source is None
 
     asyncio.run(_run())
+
+
+def _book_flight_until_options(test_client, session: str):
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Hi Sabrah"},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "I want to book a flight."},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={
+            "session_id": session,
+            "message": "I want to go from Indore to Delhi via flight.",
+        },
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Tomorrow."},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "One passenger."},
+    )
+    return test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Other."},
+    )
+
+
+def test_options_ask_read_or_screen(client) -> None:
+    test_client, _ = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    found = _book_flight_until_options(test_client, session)
+    text = found.json()["assistant_text"].lower()
+    assert "recommend" in text
+    assert "read them out" in text
+    assert "pick from the screen" in text
+
+
+def test_read_options_speaks_list_and_recommends(client) -> None:
+    test_client, _ = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    _book_flight_until_options(test_client, session)
+    reply = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Read them"},
+    )
+    data = reply.json()
+    text = data["assistant_text"].lower()
+    assert "here they are" in text
+    assert "option 1" in text
+    assert "6:10 AM" in data["assistant_text"] or "6:10 am" in text
+    assert "recommend" in text
+    assert "can't read" not in text
+
+
+def test_screen_pick_keeps_recommendation(client) -> None:
+    test_client, _ = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    _book_flight_until_options(test_client, session)
+    reply = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "I'll pick from the screen"},
+    )
+    text = reply.json()["assistant_text"].lower()
+    assert "pick from the screen" in text
+    assert "recommend" in text
+    assert "here they are" not in text
+
+
+def test_gopal_station_asks_clarification(client) -> None:
+    test_client, stack = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Hi Sabrah"},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Book a train"},
+    )
+    reply = test_client.post(
+        "/api/v1/chat/text",
+        json={
+            "session_id": session,
+            "message": "Okay. So, can you book a train for me from Khandwa to Gopal?",
+        },
+    )
+    data = reply.json()
+    text = data["assistant_text"].lower()
+    assert reply.status_code == 200
+    assert "unexpected server" not in text
+    assert "gopal" in text
+    assert "bhopal" in text
+    assert "gopalganj" in text
+    assert data["memory"]["source"] == "Khandwa"
+    assert data["memory"]["destination"] is None
+    assert not any(
+        path == "/api/v1/trains/train-list/" for _, path, _ in stack["travel"].calls
+    )
+
+
+def test_train_search_hides_generic_server_error(client) -> None:
+    test_client, stack = client
+    stack["travel"].generic_error = True
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Hi Sabrah"},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Book a train"},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Khandwa to Bhopal"},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Tomorrow."},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "One passenger."},
+    )
+    found = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Other."},
+    )
+    text = found.json()["assistant_text"].lower()
+    assert found.status_code == 200
+    assert "unexpected server" not in text
+    assert "khandwa" in text
+    assert "bhopal" in text
+
+
+def test_read_trains_speaks_number_and_time(client) -> None:
+    test_client, _ = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    _book_train_until_search(test_client, session, "Khandwa to Bhopal")
+    reply = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Read them"},
+    )
+    text = reply.json()["assistant_text"]
+    lowered = text.lower()
+    assert "here they are" in lowered
+    assert "51683" in text.replace(" ", "") or "5 1 6 8 3" in text
+    assert "8:10 AM" in text
+    assert "9:10 AM" in text
+    assert "knw-bir passenger" in lowered
+    assert "recommend" in lowered
+
+
+def test_train_details_phrase_reads_options(client) -> None:
+    test_client, _ = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    _book_train_until_search(test_client, session, "Khandwa to Bhopal")
+    reply = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Train number and time"},
+    )
+    text = reply.json()["assistant_text"]
+    assert "8:10 AM" in text
+    assert "5 1 6 8 3" in text or "51683" in text.replace(" ", "")
+
+
+def test_mumbai_after_train_options_changes_destination(client) -> None:
+    test_client, stack = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    _book_train_until_search(test_client, session, "Khandwa to Bhopal")
+    reply = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Mumbai."},
+    )
+    data = reply.json()
+    text = data["assistant_text"].lower()
+    assert "confirm" not in text
+    assert data["memory"]["destination"] == "Mumbai"
+    assert data["memory"]["source"] == "Khandwa"
+    assert "mumbai" in text
+    assert any(path == "/api/v1/trains/train-list/" for _, path, _ in stack["travel"].calls)
+
+
+def test_oneshot_train_uses_stated_name_and_for_me(client) -> None:
+    test_client, stack = client
+    session = test_client.post("/api/v1/sessions").json()["session_id"]
+    test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Hi Sabrah"},
+    )
+    reply = test_client.post(
+        "/api/v1/chat/text",
+        json={
+            "session_id": session,
+            "message": (
+                "I am Chetan. I want to go from Khandwa to Bhopal on 26th September. "
+                "Can you book a train for me?"
+            ),
+        },
+    )
+    data = reply.json()
+    text = data["assistant_text"].lower()
+    assert reply.status_code == 200
+    assert "who is travelling" not in text
+    assert "just me" not in text
+    assert data["memory"]["passenger_name"] == "Chetan"
+    assert data["memory"]["passenger_count"] == 1
+    assert data["memory"]["source"] == "Khandwa"
+    assert data["memory"]["destination"] == "Bhopal"
+    assert "search_trains" in data["tools_used"]
+    assert data["offerings"].get("trains")
+    assert any(path == "/api/v1/trains/train-list/" for _, path, _ in stack["travel"].calls)
+
+
+def test_i_am_going_is_not_a_passenger_name() -> None:
+    from app.agents import ConversationAgent
+
+    assert ConversationAgent._extract_stated_passenger_names(
+        "I am going from Khandwa to Bhopal."
+    ) == []
+    assert ConversationAgent._extract_stated_passenger_names(
+        "I am Chetan. I want to go from Khandwa to Bhopal."
+    ) == ["Chetan"]

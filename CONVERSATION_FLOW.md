@@ -6,6 +6,62 @@ You do **not** need option cards for goals. Say the trip in a normal sentence. S
 
 ---
 
+## Start here (do this, then speak)
+
+Use Super Travel in the browser. Look at this page, then say the **English line** in the table.
+
+### 1. Open the site
+
+1. Start the stack: **api-repository :8002** → **sabrah-ai :8000** → **super-travel-web :3000**.
+2. Open `http://localhost:3000/home`
+3. **Log in** (needed for events and booking pages).
+4. Bottom-right **Sabraah orb** — click it.
+5. Allow the **microphone**.
+6. Turn **Always listen for “Sabraah”** on (first time: tap **Yes, always listen**).
+
+### 2. Wake her
+
+Say this and **wait** until she answers. Do not dump the trip in the same breath as the wake word.
+
+| You say | What happens |
+|---------|----------------|
+| `Hey Sabraah` | She wakes and greets you. Then you speak the trip. |
+
+If always-listen is off: click the orb (or Talk), then speak.
+
+You can also **type** in the box and press Send.
+
+### 3. What to say next (copy these)
+
+Pick **one** line after she greets you.
+
+| What you want | Say this (English) |
+|---------------|-------------------|
+| City + date + any event + trains | `I want to go to Jaipur on 19 October. Is there any event?` |
+| Same, with origin already | `Pune to Jaipur on 19 October, is there any event?` |
+| Events only | `What events are on` or `Book an event` |
+| Events in a city | `Events in Mumbai` or `Zakir Khan events in Jaipur` |
+| Trains only | `Book a train from Pune to Delhi tomorrow, two passengers` |
+| Flights only | `Book a flight from Indore to Delhi tomorrow, one passenger` |
+| Hotel | `Book a hotel in Goa from 20 October, two nights, two guests` |
+
+### 4. Event + train combo (after the first line)
+
+| Step | You say | Why |
+|------|---------|-----|
+| 1 | `I want to go to Jaipur on 19 October. Is there any event?` | She lists events in Jaipur and asks where you are travelling from |
+| 2 | `From Pune` | She searches trains Pune → Jaipur on that date |
+| 3 | `Tell me about` + event name | Event details |
+| 4 | `Yes, book this` | Start booking |
+| 5 | Guest **full names** | Example: `Rahul Sharma and Priya Verma` |
+| 6 | Each guest: **email, 10-digit phone, gender, date of birth** | She asks one field at a time |
+| 7 | Booking page opens — click **Book / Pay** | Voice does not take payment |
+| Or | `Option 1` after trains are on screen | Pick a train instead of (or after) the event |
+
+If she finds no event, she still offers trains.
+
+---
+
 ## Where to open it
 
 | App | URL | Use for |
@@ -15,8 +71,6 @@ You do **not** need option cards for goals. Say the trip in a normal sentence. S
 | Admin / agents | `http://127.0.0.1:8000/admin` | Prompt and first-message edits |
 
 Always-listen: say **Hey Sabraah** (or **Hey Sabrah**). Or type in the box and press Send. Or press **Talk**.
-
-Start the stack in this order: **api-repository :8002** → **sabrah-ai :8000** → **super-travel-web :3000**.
 
 ---
 
@@ -107,7 +161,10 @@ Then checkout opens so you can finish passenger details and payment. Sabraah ask
 | `economy` / `premium economy` / `business class` | Cabin |
 | `round trip` / `one way` / `multi city` | Trip type |
 
-After search she recommends **one** option (cheapest vs fastest vs fewer stops) and keeps the list on screen.
+After search she recommends **one** option, then asks: **Shall I read them out, or will you pick from the screen?**
+
+- Say `read them` / `read` — she speaks the numbered list **and** the recommendation.
+- Say `I'll pick from the screen` — she keeps the recommendation and waits for `Option 1`.
 
 ---
 
@@ -124,11 +181,12 @@ After search she recommends **one** option (cheapest vs fastest vs fewer stops) 
 | 3 | Date | WHEN |
 | 4 | `Two passengers` | WHO |
 | 5 | Purpose (`personal work` / `wedding` / `other`) | WHY |
-| 6 | `Option 1` or train name | Pick from screen |
-| 7 | `Veg` / `Non veg` / `Jain` / `No meal` | Meal once |
-| 8 | `Rahul, Priya` | Names |
-| 9 | `9876543210` | Phone |
-| 10 | `Yes` | Confirm |
+| 6 | `read them` or `I'll pick from the screen` | She asks first; if you say read, she speaks options + a recommendation |
+| 7 | `Option 1` or train name | Pick |
+| 8 | `Veg` / `Non veg` / `Jain` / `No meal` | Meal once |
+| 9 | `Rahul, Priya` | Names |
+| 10 | `9876543210` | Phone |
+| 11 | `Yes` | Confirm |
 
 **Also useful:** `cheapest train` / `fastest` / `AC` / seats together is remembered as preference.
 
@@ -156,18 +214,22 @@ If the trip already has a destination and dates (from a flight), you can say `ad
 
 ## 5. Events
 
-**For:** concerts / shows / events, then open the booking page with guest details. Voice does **not** take payment.
+**For:** concerts / shows / events, then open the booking page with guest details. Voice does **not** take payment. If you also name a city and date, she suggests **trains** to get there.
 
-**How:**
+**How — events only:**
 
 | Step | You say | Why |
 |------|---------|-----|
 | 1 | `Book an event` / `what events are on` | Search |
 | 2 | Listen to Option 1, 2, … | She speaks names |
-| 3 | `Tell me about option 2` or the event name | Details |
+| 3 | `Tell me about` + the event name | Details |
 | 4 | `Yes, book this` | Confirm intent |
-| 5 | Guest **full name, email, 10-digit phone, gender, date of birth** | Required before the page opens |
-| 6 | Booking page opens — you click Book / Pay | Checkout |
+| 5 | Each guest: **full name, email, 10-digit phone, gender, date of birth** | Required before the page opens |
+| 6 | Booking page opens — click **Book / Pay** | Checkout |
+
+**How — city + date + event + trains:** see **Start here → 4** at the top. After trains are on screen, say the **event name** to book tickets, or `Option 1` to pick a train.
+
+If a guest field is wrong after the page opens, keep talking: `email is wrong, it is rahul@gmail.com`.
 
 ---
 
@@ -216,6 +278,8 @@ International places (Dubai, Europe, Switzerland, Paris, …) default to **fligh
 
 After options are on screen you can say:
 
+- `read them` — she reads the numbered list and recommends one
+- `I'll pick from the screen` — she recommends one and waits
 - `Option 2`
 - `the cheapest one`
 - `the fastest one`
@@ -238,11 +302,27 @@ She compares using **your** priority (price / time / comfort), not a generic “
 
 ## Example conversations
 
+### Event + trains (city and date)
+
+**You:** Hey Sabraah  
+*(wait for the greeting)*  
+**You:** I want to go to Jaipur on 19 October. Is there any event?  
+**Sabraah:** Event names, then asks which city you are travelling from.  
+**You:** From Pune  
+**Sabraah:** Trains Pune to Jaipur on the screen.  
+**You:** Tell me about *(event name)*  
+**You:** Yes, book this  
+**You:** Rahul Sharma and Priya Verma  
+*(then email, phone, gender, date of birth for each guest)*  
+Then click **Book / Pay** on the page.
+
 ### Flight (natural)
 
 **You:** Hey Sabraah  
 **You:** I want to book a flight from Indore to Delhi tomorrow, one passenger, other.  
-**Sabraah:** Flights on screen + one recommended option.  
+**Sabraah:** Flights on screen + one recommended option. She asks if you want them read out or will pick from the screen.  
+**You:** Read them  
+**Sabraah:** Speaks Option 1, Option 2, … then recommends one.  
 **You:** Option 1  
 
 ### Train (step by step)

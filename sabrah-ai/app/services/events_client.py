@@ -38,15 +38,37 @@ def absolute_web_url(path: str, web_app_base_url: str = "") -> str:
     return urljoin(base + "/", path.lstrip("/"))
 
 
+def event_city_from_item(item: dict[str, Any]) -> str:
+    locations = item.get("locations")
+    if isinstance(locations, dict) and locations.get("name"):
+        return str(locations["name"]).strip()
+    city = item.get("city")
+    if isinstance(city, dict) and city.get("name"):
+        return str(city["name"]).strip()
+    if isinstance(city, str) and city.strip():
+        return city.strip()
+    venues = item.get("event_venues") or []
+    first = venues[0] if isinstance(venues, list) and venues else {}
+    if isinstance(first, dict):
+        nested = first.get("city")
+        if isinstance(nested, dict) and nested.get("name"):
+            return str(nested["name"]).strip()
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return ""
+
+
 def map_event_card(
     item: dict[str, Any], *, web_app_base_url: str = ""
 ) -> dict[str, Any]:
     event_id = item.get("id") or item.get("event_id")
     paths = event_booking_paths(event_id)
     price = item.get("start_price")
+    city = event_city_from_item(item)
     hint_bits = [
         bit
         for bit in (
+            city,
             item.get("venue_name"),
             item.get("artist_name"),
             item.get("start_date_time"),
@@ -59,6 +81,7 @@ def map_event_card(
         "name": item.get("name") or "Event",
         "artist_name": item.get("artist_name"),
         "category_name": item.get("category_name"),
+        "city": city or None,
         "venue_name": item.get("venue_name"),
         "venue_address": item.get("venue_address"),
         "start_date_time": item.get("start_date_time"),
@@ -112,6 +135,9 @@ def map_event_details(
         **card,
         "category_name": category_name or card.get("category_name"),
         "venue_name": card.get("venue_name") or first_venue.get("venue_name"),
+        "city": card.get("city") or event_city_from_item(item) or event_city_from_item(
+            {"event_venues": venues}
+        ) or None,
         "minimum_age": item.get("minimum_age"),
         "tickets": tickets,
         "schedules": schedules,
@@ -127,8 +153,11 @@ def _city_matches(item: dict[str, Any], city: Optional[str]) -> bool:
         return True
     hay = " ".join(
         str(item.get(key) or "")
-        for key in ("venue_name", "venue_address", "name", "brief_desc")
+        for key in ("venue_name", "venue_address", "name", "brief_desc", "city")
     ).lower()
+    locations = item.get("locations")
+    if isinstance(locations, dict):
+        hay += " " + str(locations.get("name") or "").lower()
     return needle in hay
 
 
