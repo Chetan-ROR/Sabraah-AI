@@ -31,7 +31,7 @@ class TravelSlotMemory(BaseModel):
     trip_type: Optional[str] = None
     transport_type: Optional[str] = None
     # leisure | business | honeymoon | family | adventure | religious | medical |
-    # shopping | wedding | baraat | conference | weekend | other
+    # emergency | shopping | wedding | baraat | conference | weekend | other
     trip_purpose: Optional[str] = None
     # solo | couple | family | group | business
     party_type: Optional[str] = None
@@ -44,12 +44,22 @@ class TravelSlotMemory(BaseModel):
     avoid_early_departure: Optional[bool] = None
     travel_pace: Optional[str] = None
     accessibility_needed: Optional[bool] = None
+    medical_notes: Optional[str] = None
+    event_category: Optional[str] = None
+    event_artist: Optional[str] = None
+    # wedding | birthday | corporate | conference | reception | engagement | anniversary | other
+    venue_event_type: Optional[str] = None
+    # hotel | banquet | government
+    venue_kind: Optional[str] = None
+    # none | food | decoration | food_decoration
+    venue_services: Optional[str] = None
+    selected_venue_id: Optional[str] = None
     extra_meal: Optional[str] = None
     extra_baggage: Optional[str] = None
     extra_checkin: Optional[str] = None
     flight_fare_name: Optional[str] = None
     hotel_area: Optional[str] = None
-    # book_train | book_flight | book_event | cancel | refund | charter | (legacy support)
+    # book_train | book_flight | book_event | book_venue | cancel | refund | charter | (legacy support)
     user_goal: Optional[str] = None
     # welcome | goal | where | why | when | passengers | search | ...
     flow_step: Optional[str] = None
@@ -139,6 +149,9 @@ class TextChatRequest(BaseModel):
     session_id: str
     message: str = Field(min_length=1)
     agent_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_email: Optional[str] = None
     user_access_token: Optional[str] = None
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Optional
 from urllib.parse import urljoin
@@ -158,7 +159,38 @@ def _city_matches(item: dict[str, Any], city: Optional[str]) -> bool:
     locations = item.get("locations")
     if isinstance(locations, dict):
         hay += " " + str(locations.get("name") or "").lower()
+    hay += " " + event_city_from_item(item).lower()
     return needle in hay
+
+
+_NEARBY_CITIES = {
+    "jaipur": ["ajmer", "alwar", "jodhpur", "udaipur", "delhi", "agra", "kota"],
+    "delhi": ["noida", "gurgaon", "gurugram", "ghaziabad", "faridabad", "jaipur"],
+    "new delhi": ["noida", "gurgaon", "gurugram", "ghaziabad", "faridabad", "jaipur"],
+    "mumbai": ["thane", "navi mumbai", "pune", "nashik"],
+    "pune": ["mumbai", "nashik"],
+    "bangalore": ["mysore", "mysuru"],
+    "bengaluru": ["mysore", "mysuru"],
+    "indore": ["bhopal", "ujjain", "khandwa"],
+    "bhopal": ["indore", "khandwa"],
+    "hyderabad": ["vijayawada", "warangal"],
+    "chennai": ["pondicherry", "puducherry"],
+    "kolkata": ["howrah"],
+    "ahmedabad": ["vadodara", "surat"],
+}
+
+
+def _nearby_cities_for(city: Optional[str]) -> list[str]:
+    key = re.sub(r"\s+", " ", (city or "").strip().lower())
+    return list(_NEARBY_CITIES.get(key) or [])
+
+
+def _card_in_cities(card: dict[str, Any], cities: list[str]) -> bool:
+    hay = " ".join(
+        str(card.get(key) or "")
+        for key in ("city", "venue_name", "venue_address", "hint", "name")
+    ).lower()
+    return any(name in hay for name in cities if name)
 
 
 class SuperTravelEventsClient:
@@ -288,15 +320,29 @@ class SuperTravelEventsClient:
         rows = payload.get("data") or []
         if not isinstance(rows, list):
             rows = []
-        cards = [
+        all_cards = [
             map_event_card(item, web_app_base_url=self._web_app_base_url)
             for item in rows
-            if isinstance(item, dict) and _city_matches(item, city)
+            if isinstance(item, dict)
         ]
+        local = [card for card in all_cards if _city_matches(card, city)]
+        nearby = False
+        cards = local
+        if city and not local:
+            neighbors = _nearby_cities_for(city)
+            nearby_cards = [card for card in all_cards if _card_in_cities(card, neighbors)]
+            if nearby_cards:
+                cards = nearby_cards
+                nearby = True
+            elif all_cards:
+                cards = all_cards
+                nearby = True
         return {
             "results": cards[:8],
             "count": len(cards),
             "provider": "SUPER_TRAVEL",
+            "nearby": nearby,
+            "requested_city": city,
         }
 
     async def detail(

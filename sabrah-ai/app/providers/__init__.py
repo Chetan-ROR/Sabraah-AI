@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _STT_PROMPT = (
     "Hey Sabraah. Book a train. Book a flight. Book a hotel. Book an event. "
-    "Thank you. Please. Bye. Pune to Delhi. Mumbai. Indore. Jaipur."
+    "Thank you. Please. Bye."
 )
 
 _STT_PROMPT_LEAKS = (
@@ -217,11 +217,21 @@ class ElevenLabsTTSProvider(TextToSpeechProvider):
         payload = {
             "text": text,
             "model_id": self._model_id,
-            "voice_settings": {"stability": 0.4, "similarity_boost": 0.75},
+            "voice_settings": {
+                "stability": 0.58,
+                "similarity_boost": 0.72,
+                "style": 0.15,
+                "use_speaker_boost": True,
+                "speed": 0.84,
+            },
         }
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(url, headers=headers, json=payload)
+                if response.status_code == 400 and "speed" in (response.text or "").lower():
+                    payload["voice_settings"].pop("speed", None)
+                    payload["voice_settings"].pop("style", None)
+                    response = await client.post(url, headers=headers, json=payload)
         except httpx.HTTPError as exc:
             raise ProviderError(
                 "Voice playback is temporarily unavailable.",

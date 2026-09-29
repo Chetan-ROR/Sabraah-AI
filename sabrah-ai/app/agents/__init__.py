@@ -32,6 +32,7 @@ MEMORY_HINT_TOOLS = {
     "search_flights",
     "search_buses",
     "search_hotels",
+    "search_venues",
     "search_packages",
     "search_local_transport",
     "search_events",
@@ -56,13 +57,16 @@ SCREEN_OPTIONS_LINE = (
 )
 
 MAIN_MENU_LINE = (
-    "Hi, I'm Sabrah. Tell me the trip — where, when, and who is travelling — "
-    "or say book a flight, train, hotel, or event. I can also cancel or refund."
+    "Hi, I'm Sabrah. Let's plan something you'll remember — "
+    "a getaway, a stay, or a celebration. What's on your mind?"
 )
 
 PURPOSE_ASK_LINE = (
-    "What's the trip for — leisure, family, business, wedding, or something else?"
+    "What's the trip for — leisure, family, business, honeymoon, medical, "
+    "emergency, or something else?"
 )
+
+VENUE_OTHER_ASK_LINE = "Okay. What is the event? Tell me in your own words."
 
 ENGLISH_ONLY_REPROMPT = (
     "Please speak in English for now. Multi-language support is coming soon."
@@ -160,7 +164,11 @@ class ConversationAgent:
     @staticmethod
     def _maybe_set_booking_mode(session: SessionState, user_text: str) -> None:
         mem = session.memory
-        if mem.selected_flight_id and mem.flow_step in {"flight_extras", "flight_open"}:
+        if mem.selected_flight_id and mem.flow_step in {
+            "flight_extras",
+            "flight_guests",
+            "flight_open",
+        }:
             return
         ConversationAgent._ingest_trip_signals(session, user_text)
         text = user_text.lower()
@@ -174,6 +182,16 @@ class ConversationAgent:
         elif "veg meal" in text or "vegetarian" in text or text.strip() in {"veg", "veg."}:
             mem.meal_preference = "veg"
             mem.meal_asked = True
+        elif re.search(r"\bvegan\b", text):
+            mem.meal_preference = "veg"
+            mem.dietary_restrictions = "vegan"
+            mem.meal_asked = True
+        elif re.search(r"\bhalal\b", text):
+            mem.dietary_restrictions = "halal"
+        elif re.search(r"\bkosher\b", text):
+            mem.dietary_restrictions = "kosher"
+        elif re.search(r"\bgluten[-\s]?free\b", text):
+            mem.dietary_restrictions = "gluten_free"
         elif "no meal" in text or "without meal" in text or "skip meal" in text:
             mem.meal_preference = "none"
             mem.book_meal_with_ticket = False
@@ -183,7 +201,12 @@ class ConversationAgent:
         if "catering" in text and ("full" in text or "entire" in text or "whole" in text):
             mem.catering_full_train = True
 
-        if ConversationAgent._is_event_intent(text):
+        if ConversationAgent._is_venue_intent(text):
+            mem.user_goal = "book_venue"
+            mem.booking_mode = "venue"
+            mem.intent = "book"
+            mem.flow_step = mem.flow_step or "venue_search"
+        elif ConversationAgent._is_event_intent(text):
             mem.event_required = True
             has_train = ConversationAgent._is_train_intent(text)
             has_flight = ConversationAgent._is_flight_intent(text)
@@ -223,6 +246,9 @@ class ConversationAgent:
             mem.hotel_required = True
             mem.booking_mode = "hotel"
 
+        if mem.user_goal == "book_venue" or mem.booking_mode == "venue":
+            ConversationAgent._ingest_venue_slots(mem, user_text)
+
         # Support / charter can interrupt anytime.
         if any(
             h in text
@@ -253,7 +279,7 @@ class ConversationAgent:
                 "group booking",
                 "group of",
             )
-        ):
+        ) and mem.user_goal not in {"book_venue", "book_event"}:
             mem.booking_mode = "charter"
             mem.intent = "charter"
             mem.user_goal = "charter"
@@ -262,7 +288,7 @@ class ConversationAgent:
         count = ConversationAgent._parse_passenger_count(user_text)
         if count:
             mem.passenger_count = count
-            if count > 9:
+            if count > 9 and mem.user_goal not in {"book_venue", "book_event"}:
                 mem.booking_mode = "charter"
                 mem.intent = "charter"
                 mem.user_goal = "charter"
@@ -356,7 +382,7 @@ class ConversationAgent:
             early_text = await self._handle_guided_flow(
                 session, user_text, tools_used
             )
-        if early_text is None:
+        if early_text is None and session.memory.user_goal != "book_venue":
             early_text = await self._handle_event_flow(
                 session, user_text, tools_used
             )
@@ -645,6 +671,9 @@ class ConversationAgent:
         if session.memory.user_goal == "book_event" and session.memory.flow_step == "event_open":
             booking_url = self._selected_event_booking_url(session)
             open_booking = bool(booking_url)
+        if session.memory.user_goal == "book_venue" and session.memory.flow_step == "venue_open":
+            booking_url = self._selected_venue_booking_url(session)
+            open_booking = bool(booking_url)
         if session.memory.user_goal == "book_flight" and session.memory.flow_step == "flight_open":
             checkout = session.last_offerings.get("flight_checkout") or {}
             if isinstance(checkout, dict) and checkout.get("booking_url"):
@@ -878,6 +907,27 @@ class ConversationAgent:
             slots["intent"] = "search_hotels"
             if not session.memory.booking_mode:
                 slots["booking_mode"] = "itinerary"
+        elif tool_name == "search_venues":
+            slots["booking_mode"] = "venue"
+            slots["user_goal"] = "book_venue"
+            slots["intent"] = "book"
+            if args.get("city"):
+                slots["destination"] = args["city"]
+            if args.get("event_type"):
+                slots["venue_event_type"] = args["event_type"]
+            if args.get("venue_kind"):
+                slots["venue_kind"] = args["venue_kind"]
+            if args.get("services"):
+                slots["venue_services"] = args["services"]
+            if args.get("guests"):
+                slots["passenger_count"] = args["guests"]
+            if args.get("event_date"):
+                slots["departure_date"] = args["event_date"]
+            if args.get("budget") not in (None, ""):
+                slots["budget"] = args["budget"]
+            venue_id = args.get("venue_id") or result.get("id")
+            if venue_id:
+                slots["selected_venue_id"] = str(venue_id)
         elif tool_name.startswith("search_packages") or tool_name == "create_package_plan":
             slots["intent"] = "packages"
             slots["booking_mode"] = "itinerary"
@@ -885,6 +935,8 @@ class ConversationAgent:
             slots["booking_mode"] = "event"
             slots["user_goal"] = "book_event"
             slots["intent"] = "book"
+            if args.get("artist"):
+                slots["event_artist"] = args["artist"]
             if result.get("name"):
                 slots["event_name"] = result["name"]
             event_id = result.get("id") or args.get("event_id")
@@ -932,13 +984,15 @@ class ConversationAgent:
 
         session.memory = update_memory_from_slots(session.memory, slots)
         if isinstance(result.get("results"), list):
-            session.last_search_results = result["results"]
+            ordered = self._order_results(session, result["results"])
+            result["results"] = ordered
+            session.last_search_results = ordered
             if tool_name == "search_trains":
-                session.last_offerings["trains"] = result["results"]
-                session.itinerary_cache["trains"] = result["results"]
+                session.last_offerings["trains"] = ordered
+                session.itinerary_cache["trains"] = ordered
             elif tool_name == "search_flights":
-                session.last_offerings["flights"] = result["results"]
-                session.itinerary_cache["flights"] = result["results"]
+                session.last_offerings["flights"] = ordered
+                session.itinerary_cache["flights"] = ordered
             elif tool_name == "search_buses":
                 session.last_offerings["buses"] = result["results"]
                 session.itinerary_cache["buses"] = result["results"]
@@ -948,6 +1002,13 @@ class ConversationAgent:
             elif tool_name == "search_hotels":
                 session.last_offerings["hotels"] = result["results"]
                 session.itinerary_cache["hotels"] = result["results"]
+            elif tool_name == "search_venues":
+                session.last_offerings["venues"] = result["results"]
+                if result.get("booking_url"):
+                    session.last_offerings["venue_checkout"] = {
+                        "booking_url": result.get("booking_url"),
+                        "rfp_url": result.get("rfp_url"),
+                    }
             elif tool_name == "search_packages":
                 session.last_offerings["packages"] = result["results"]
             elif tool_name == "search_events":
@@ -1121,12 +1182,12 @@ class ConversationAgent:
                 "number is",
             )
         ) and not re.search(
-            r"\b(?:option|train|bus|hotel|flight|event)\s*\d+\b",
+            r"\b(?:option|train|bus|hotel|flight|event|venue)\s*\d+\b",
             raw_l,
         ):
             # Only allow explicit "option 2" / "train 2" style choices here.
             numbered = re.search(
-                r"\b(?:option|train|bus|hotel|flight|package|event)\s*(?:number\s*)?(\d+)\b",
+                r"\b(?:option|train|bus|hotel|flight|package|event|venue)\s*(?:number\s*)?(\d+)\b",
                 text,
             )
             if numbered:
@@ -1183,7 +1244,7 @@ class ConversationAgent:
             return None
 
         numbered = re.search(
-            r"(?:option|train|bus|hotel|flight|package|event|number|no|num)?\s*(\d+)",
+            r"(?:option|train|bus|hotel|flight|package|event|venue|number|no|num)?\s*(\d+)",
             text,
         )
         if not numbered:
@@ -1878,12 +1939,89 @@ class ConversationAgent:
         return f"Got the route{route}. {PURPOSE_ASK_LINE}"
 
     @staticmethod
-    def _is_event_intent(text: str) -> bool:
+    def _looks_like_emergency(text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b("
+                r"emergency|urgent|asap|"
+                r"as soon as possible|right away|immediately|"
+                r"need to reach (?:fast|quickly)|"
+                r"fastest (?:flight|train|option)"
+                r")\b",
+                (text or "").lower(),
+            )
+        )
+
+    @staticmethod
+    def _apply_purpose_priority(mem: Any) -> None:
+        if mem.trip_purpose == "emergency":
+            mem.value_priority = "time"
+            mem.train_preference = "fastest"
+            mem.date_flexible = False
+        elif mem.trip_purpose == "medical":
+            mem.value_priority = mem.value_priority or "comfort"
+
+    def _ask_medical_followup(self, session: SessionState) -> str:
+        session.memory.flow_step = "medical_reason"
+        return (
+            "Sorry you're travelling for treatment. What happened, "
+            "and does anyone need wheelchair or other assistance? "
+            "If this is an emergency, say so and I'll show the earliest and fastest options."
+        )
+
+    def _capture_medical_followup(self, session: SessionState, user_text: str) -> Optional[str]:
+        mem = session.memory
+        text = (user_text or "").strip().lower()
+        if self._looks_like_emergency(user_text):
+            mem.trip_purpose = "emergency"
+            self._apply_purpose_priority(mem)
+        if re.search(
+            r"\b(skip|nothing|no assistance|prefer not|don't want to say|do not want to say)\b",
+            text,
+        ):
+            mem.medical_notes = mem.medical_notes or "not specified"
+        elif text and not re.fullmatch(r"(?:it(?:'s| is) )?medical[.!]?", text):
+            mem.medical_notes = (user_text or "").strip()[:200]
+        if not mem.medical_notes:
+            return (
+                "Please tell me briefly what happened, or say skip. "
+                "If it is an emergency, say emergency."
+            )
+        return None
+
+    def _needs_medical_followup(self, mem: Any) -> bool:
+        return mem.trip_purpose == "medical" and not mem.medical_notes
+
+    @staticmethod
+    def _is_venue_intent(text: str) -> bool:
         lowered = (text or "").lower()
         return bool(
             re.search(
                 r"\b("
+                r"event venues?|venues?|banquet(?:s| halls?)?|"
+                r"wedding halls?|marriage halls?|party halls?|"
+                r"convention (?:hall|center|centre)|"
+                r"government venues?|hotel venues?|"
+                r"book (?:an |a )?venue|book (?:an |a )?event venue|"
+                r"send (?:an |a )?rfps?|request for proposal|"
+                r"(?:wedding|birthday|corporate|reception|engagement)"
+                r".{0,40}(?:venue|hall|banquet|hotel)"
+                r")\b",
+                lowered,
+            )
+        )
+
+    @staticmethod
+    def _is_event_intent(text: str) -> bool:
+        lowered = (text or "").lower()
+        if ConversationAgent._is_venue_intent(lowered):
+            return False
+        return bool(
+            re.search(
+                r"\b("
                 r"events|concerts?|festivals?|comedy(?:\s+shows?)?|"
+                r"exhibitions?|conferences?|theme parks?|"
+                r"sports (?:event|match)|attractions?|"
                 r"book (?:an |a )?(?:show|event)|live show|"
                 r"what(?:'s| is| are)?(?: the)? events|"
                 r"any events?|"
@@ -1945,6 +2083,8 @@ class ConversationAgent:
     @staticmethod
     def _is_hotel_intent(text: str) -> bool:
         lowered = (text or "").lower()
+        if ConversationAgent._is_venue_intent(lowered):
+            return False
         return bool(
             re.search(
                 r"\b(hotels?|stay|resort|villa|need a room|book (?:a )?stay)\b",
@@ -1961,6 +2101,9 @@ class ConversationAgent:
             (r"\binsurance\b", "Travel insurance"),
             (r"\b(car rental|self drive|chauffeur)\b", "Car rental"),
             (r"\bbuses?\b", "Buses"),
+            (r"\bwallet\b", "Wallet"),
+            (r"\bloyalty\b", "Loyalty"),
+            (r"\b(holiday )?packages?\b", "Holiday packages"),
         )
         for pattern, label in mapping:
             if re.search(pattern, text):
@@ -2027,8 +2170,17 @@ class ConversationAgent:
         if re.search(r"\b(4\s*a\.?m|too early|not early|don'?t want to wake|early morning)\b", text):
             mem.avoid_early_departure = True
 
-        if re.search(r"\b(wheelchair|accessible|accessibility|special assistance|elderly)\b", text):
+        if re.search(
+            r"\b(wheelchair|accessible|accessibility|special assistance|elderly|"
+            r"oxygen|stretcher|pregnant|mobility|medical condition|diabetes|"
+            r"heart (?:patient|condition))\b",
+            text,
+        ):
             mem.accessibility_needed = True
+            mem.medical_notes = (user_text or "").strip()[:200]
+            mem.value_priority = mem.value_priority or "comfort"
+            if re.search(r"\b(wheelchair|mobility|oxygen|stretcher)\b", text):
+                mem.direct_only = True
 
         if re.search(r"\b(relaxed|not (?:a )?crazy itinerary|slow pace|with kids so)\b", text):
             mem.travel_pace = "relaxed"
@@ -2037,12 +2189,29 @@ class ConversationAgent:
 
         if re.search(r"\b(premium economy)\b", text):
             mem.travel_class = "premium_economy"
-        elif re.search(r"\b(business class|in business)\b", text):
+        elif re.search(r"\b(business class|in business|business cabin)\b", text):
+            mem.travel_class = "business"
+        elif mem.flow_step == "cabin" and re.search(r"\bbusiness\b", text):
             mem.travel_class = "business"
         elif re.search(r"\bfirst class\b", text):
             mem.travel_class = "first"
         elif re.search(r"\beconomy\b", text):
             mem.travel_class = "economy"
+
+        for category, keys in (
+            ("concert", ("concert", "live music")),
+            ("comedy", ("comedy", "standup", "stand up")),
+            ("festival", ("festival",)),
+            ("exhibition", ("exhibition", "expo")),
+            ("conference", ("conference", "seminar")),
+            ("sports", ("sports event", "sports match", "cricket match")),
+            ("theme_park", ("theme park", "amusement park")),
+            ("attraction", ("attraction",)),
+            ("entertainment", ("entertainment",)),
+        ):
+            if any(key in text for key in keys):
+                mem.event_category = category
+                break
 
         if re.search(r"\b(cheap(?:est)? but not uncomfortable|best value|balance|balanced)\b", text):
             mem.value_priority = "balanced"
@@ -2111,7 +2280,7 @@ class ConversationAgent:
         elif re.search(r"\bbusiness (?:trip|travel)\b", text):
             mem.party_type = "business"
 
-        if ConversationAgent._is_hotel_intent(text):
+        if ConversationAgent._is_hotel_intent(text) and mem.user_goal != "book_venue":
             mem.hotel_required = True
 
         for purpose, keys in (
@@ -2123,7 +2292,15 @@ class ConversationAgent:
             ("conference", ("conference", "meeting", "seminar")),
             ("adventure", ("adventure", "trek", "hiking")),
             ("religious", ("religious", "pilgrimage", "temple trip", "umrah", "hajj")),
-            ("medical", ("medical", "treatment", "hospital")),
+            ("emergency", (
+                "emergency",
+                "urgent",
+                "asap",
+                "as soon as possible",
+                "right away",
+                "immediately",
+            )),
+            ("medical", ("medical", "treatment", "hospital", "surgery", "operation")),
             ("shopping", ("shopping trip", "shopping")),
             ("weekend", ("weekend getaway", "weekend trip")),
             ("leisure", ("leisure", "holiday", "vacation", "tourism")),
@@ -2134,6 +2311,7 @@ class ConversationAgent:
                 break
         if re.fullmatch(r"other[.!]?", text):
             mem.trip_purpose = "other"
+        ConversationAgent._apply_purpose_priority(mem)
 
         names = ConversationAgent._extract_stated_passenger_names(user_text)
         if names:
@@ -2200,6 +2378,8 @@ class ConversationAgent:
         if not scored:
             return 1, {}, "balanced"
         priority = mem.value_priority or "balanced"
+        if mem.trip_purpose == "emergency":
+            priority = "time"
 
         def duration(row: dict[str, Any]) -> int:
             return self._duration_minutes(row.get("duration")) or 10_000
@@ -2210,7 +2390,15 @@ class ConversationAgent:
             except (TypeError, ValueError):
                 return 0
 
-        if priority == "price":
+        if mem.trip_purpose == "emergency":
+            index, row = min(
+                scored,
+                key=lambda item: (
+                    self._depart_minutes(item[1]),
+                    duration(item[1]),
+                ),
+            )
+        elif priority == "price":
             index, row = min(scored, key=lambda item: self._item_price_value(item[1]))
         elif priority == "time":
             index, row = min(scored, key=lambda item: duration(item[1]))
@@ -2238,6 +2426,7 @@ class ConversationAgent:
         self, session: SessionState, rows: list[dict[str, Any]]
     ) -> str:
         option_n, picked, priority = self._recommend_option(rows, session.memory)
+        mem = session.memory
         label = picked.get("name") or picked.get("airline") or f"Option {option_n}"
         number = str(picked.get("train_number") or "").strip()
         if not number and re.fullmatch(r"\d{4,6}", str(picked.get("id") or "").strip()):
@@ -2247,7 +2436,11 @@ class ConversationAgent:
         price = picked.get("price_label") or ""
         why = {
             "price": "lowest fare",
-            "time": "shortest travel time",
+            "time": (
+                "the earliest departure and shortest travel time"
+                if mem.trip_purpose == "emergency"
+                else "shortest travel time"
+            ),
             "comfort": "fewer stops and a more comfortable journey",
             "convenience": "more convenient routing",
             "luxury": "a more premium option",
@@ -2257,6 +2450,37 @@ class ConversationAgent:
         extra = f" {price}" if price else ""
         return f"I recommend Option {option_n} ({label}{extra}) for {why}."
 
+    @staticmethod
+    def _depart_minutes(row: dict[str, Any]) -> int:
+        raw = str(row.get("departure_time") or "")
+        match = re.search(r"(\d{1,2}):(\d{2})\s*(AM|PM)", raw, flags=re.I)
+        if match:
+            hour = int(match.group(1)) % 12
+            if match.group(3).upper() == "PM":
+                hour += 12
+            return hour * 60 + int(match.group(2))
+        match = re.search(r"(\d{1,2}):(\d{2})", raw)
+        if match:
+            return int(match.group(1)) * 60 + int(match.group(2))
+        return 10_000
+
+    def _order_results(
+        self, session: SessionState, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        items = [row for row in rows if isinstance(row, dict)]
+        if not items:
+            return rows
+        mem = session.memory
+        if mem.trip_purpose == "emergency" or mem.value_priority == "time":
+            return sorted(
+                items,
+                key=lambda row: (
+                    self._depart_minutes(row),
+                    self._duration_minutes(row.get("duration")) or 10_000,
+                ),
+            )
+        return items
+
     def _current_option_rows(
         self, session: SessionState
     ) -> tuple[list[dict[str, Any]], str]:
@@ -2264,6 +2488,7 @@ class ConversationAgent:
             ("flights", "flights"),
             ("trains", "trains"),
             ("hotels", "hotels"),
+            ("venues", "venues"),
             ("events", "events"),
             ("fares", "fare types"),
             ("meals", "meals"),
@@ -2313,9 +2538,16 @@ class ConversationAgent:
             if kind != "hotels"
             else f"in {mem.destination or mem.source}"
         )
+        cabin = (mem.travel_class or "").replace("_", " ")
+        cabin_bit = f" {cabin} class" if kind == "flights" and cabin else ""
+        reason = ""
+        if mem.trip_purpose == "emergency":
+            reason = " I put the earliest and fastest options first because this is an emergency."
+        elif kind == "flights" and mem.accessibility_needed:
+            reason = " I factored in your assistance needs, and preferred easier connections."
         return (
-            f"{kind.title()} {route} are on your screen. {rec} "
-            "Shall I read them out, or will you pick from the screen?"
+            f"{kind.title()}{cabin_bit} {route} are on your screen.{reason} {rec} "
+            "Shall I read them out slowly, or will you pick from the screen?"
         )
 
     @staticmethod
@@ -2412,8 +2644,8 @@ class ConversationAgent:
             if len(spoken) >= 6:
                 break
         return (
-            "Here they are. "
-            + ". ".join(spoken)
+            "Here they are, one by one. "
+            + ". Next. ".join(spoken)
             + f". {rec} Tell me which option number you want."
         )
 
@@ -2479,15 +2711,21 @@ class ConversationAgent:
         dur_bit = f", {duration}" if duration else ""
         price = str(item.get("price_label") or "").strip()
         price_bit = f", {price}" if price else ""
-        return f"Option {index}, {number_bit}{name}{when}{dur_bit}{price_bit}"
+        cabin = str(item.get("cabin") or item.get("travel_class") or "").replace("_", " ").strip()
+        cabin_bit = f", {cabin} class" if cabin else ""
+        airline = str(item.get("airline") or "").strip()
+        airline_bit = f", {airline}" if airline and airline.lower() not in name.lower() else ""
+        return (
+            f"Option {index}. {number_bit}{name}{airline_bit}{cabin_bit}"
+            f"{when}{dur_bit}{price_bit}"
+        )
 
     _EVENT_SEARCH_STOP = {
         "a", "about", "all", "an", "and", "any", "anything", "are", "around",
-        "at", "available", "be", "book", "can", "coming", "comedy", "concert",
-        "concerts", "could", "currently", "do", "event", "events", "everything",
-        "festival", "festivals", "for", "from", "get", "give", "going", "got",
-        "any", "concert", "concerts", "comedy", "date", "dates", "event",
-        "events", "festival", "festivals", "go", "going", "have", "happening",
+        "at", "available", "be", "book", "can", "coming",
+        "could", "currently", "date", "dates", "do", "event", "events",
+        "everything", "for", "from", "get", "give", "go", "going", "got",
+        "have", "happening",
         "hello", "here", "hey", "hi", "how", "i", "im",
         "in", "is", "jana", "jaana", "just", "kind", "kinda", "know", "let",
         "like", "list", "live", "looking", "me", "much", "many", "my", "near",
@@ -2500,8 +2738,85 @@ class ConversationAgent:
         "traveling", "up", "us", "visit", "visiting", "want", "wanna", "was",
         "we", "weekend", "were", "what", "whats", "when", "where", "which",
         "who", "whom", "whose", "why", "with", "would", "you", "your", "youre",
-        "name", "names", "aloud", "again",
+        "name", "names", "aloud", "again", "list",
+        "idea", "ideas", "ongoing", "suggest", "suggestion", "suggestions",
     }
+
+    _ARTIST_ALIASES = {
+        "jakhir khan": "Zakir Khan",
+        "jakir khan": "Zakir Khan",
+        "zakhir khan": "Zakir Khan",
+        "zaakir khan": "Zakir Khan",
+        "zakir khan": "Zakir Khan",
+        "arijith singh": "Arijit Singh",
+        "arijit singh": "Arijit Singh",
+        "shreya goshal": "Shreya Ghoshal",
+        "shreya ghoshal": "Shreya Ghoshal",
+        "naseerudin shah": "Naseeruddin Shah",
+        "naseeruddin shah": "Naseeruddin Shah",
+    }
+
+    @classmethod
+    def _canonical_artist(cls, name: str) -> str:
+        key = re.sub(r"[^a-z0-9\s'-]+", " ", (name or "").strip().lower())
+        key = re.sub(r"\s+", " ", key).strip()
+        if not key:
+            return ""
+        if key in cls._ARTIST_ALIASES:
+            return cls._ARTIST_ALIASES[key]
+        return " ".join(part.capitalize() for part in key.split())
+
+    @classmethod
+    def _parse_event_artist(cls, user_text: str) -> Optional[str]:
+        lowered = (user_text or "").lower()
+        match = re.search(
+            r"\b(?:events?|shows?|concerts?|comedy|gigs?|tickets?)\s+"
+            r"(?:for|by|of|with)\s+"
+            r"([a-z][a-z'-]+(?:\s+[a-z][a-z'-]+){0,3})",
+            lowered,
+        )
+        if not match:
+            match = re.search(
+                r"\b(?:for|by)\s+([a-z][a-z'-]+(?:\s+[a-z][a-z'-]+){0,3})"
+                r"(?=\s*(?:[.!?,]|$|\s+so\b|\s+in\b|\s+do\b|\s+please\b))",
+                lowered,
+            )
+        if not match:
+            match = re.search(
+                r"\b([a-z][a-z'-]+(?:\s+[a-z][a-z'-]+){0,2})\s+"
+                r"(?:events?|shows?|concerts?|comedy|gigs?)\b",
+                lowered,
+            )
+        if not match:
+            return None
+        tokens = [
+            tok
+            for tok in re.findall(r"[a-z][a-z'-]+", match.group(1))
+            if tok not in cls._EVENT_SEARCH_STOP
+            and tok not in {"so", "please", "me", "you", "us", "him", "her", "them"}
+            and tok not in cls._EVENT_CITIES
+            and tok not in cls._MONTH_TOKENS
+        ]
+        if len(tokens) < 2 and tokens[:1] in (["me"], ["you"], ["us"]):
+            return None
+        if not tokens:
+            return None
+        return cls._canonical_artist(" ".join(tokens))
+
+    @staticmethod
+    def _events_for_artist(rows: list[dict[str, Any]], artist: str) -> list[dict[str, Any]]:
+        needle = re.sub(r"\s+", " ", (artist or "").strip().lower())
+        if not needle:
+            return []
+        matched = []
+        for row in rows:
+            hay = " ".join(
+                str(row.get(key) or "")
+                for key in ("artist_name", "name", "hint")
+            ).lower()
+            if needle in hay or all(part in hay for part in needle.split()):
+                matched.append(row)
+        return matched
 
     @classmethod
     def _event_search_args(cls, user_text: str) -> dict[str, Any]:
@@ -2512,6 +2827,8 @@ class ConversationAgent:
             (name for name in cls._EVENT_CITIES if re.search(rf"\b{re.escape(name)}\b", text)),
             None,
         )
+        artist = cls._parse_event_artist(user_text)
+        artist_tokens = set((artist or "").lower().split())
         leftover = [
             tok
             for tok in re.findall(r"[a-z0-9]+", text)
@@ -2520,11 +2837,14 @@ class ConversationAgent:
             and not re.fullmatch(r"\d{1,4}", tok)
             and len(tok) > 2
             and tok != (city or "")
+            and tok not in artist_tokens
         ]
         args: dict[str, Any] = {}
         if city:
             args["city"] = cls._title_city(city)
-        if leftover and len(leftover) <= 5:
+        if artist:
+            args["artist"] = artist
+        elif leftover and len(leftover) <= 5:
             args["search"] = " ".join(leftover)
         return args
 
@@ -2600,15 +2920,41 @@ class ConversationAgent:
         display = ((hour + 11) % 12) + 1
         return f"{date_label} at {display}:{parsed.strftime('%M')} {period}"
 
-    def _speak_event_names(self, rows: list[dict[str, Any]]) -> str:
+    @staticmethod
+    def _has_existing_trip(session: SessionState) -> bool:
+        mem = session.memory
+        return bool(
+            session.last_offerings.get("trains")
+            or session.last_offerings.get("flights")
+            or (mem.source and mem.destination)
+            or mem.user_goal in {"book_train", "book_flight"}
+        )
+
+    def _speak_event_names(
+        self, rows: list[dict[str, Any]], session: Optional[SessionState] = None
+    ) -> str:
         lines = []
         for index, row in enumerate(rows, 1):
             name = str(row.get("name") or "Event").strip()
-            lines.append(f"Option {index}, {name}")
-        spoken = ". ".join(lines)
+            artist = str(row.get("artist_name") or "").strip()
+            label = f"Option {index}, {name}"
+            if artist and artist.lower() not in name.lower():
+                label = f"{label}, with {artist}"
+            city = str(row.get("city") or "").strip()
+            if city and city.lower() not in label.lower():
+                label = f"{label}, in {city}"
+            lines.append(label)
+        spoken = ". Next. ".join(lines)
+        add_trip = ""
+        if session is not None and self._has_existing_trip(session):
+            session.memory.flow_step = "event_add_trip"
+            add_trip = " Would you like me to add this event to your existing trip?"
+        elif session is not None:
+            session.memory.flow_step = "event_pick"
         return (
             f"Here are the events. {spoken}. "
             "If you want to know about one, say tell me about, then the event name."
+            f"{add_trip}"
         )
 
     @staticmethod
@@ -2847,11 +3193,6 @@ class ConversationAgent:
     def _parse_event_guest_names(user_text: str) -> list[str]:
         text = user_text or ""
         lowered = text.lower()
-        if ConversationAgent._looks_like_guest_details(text) and not re.search(
-            r"\b(?:my name is|names? are|guest(?:s)?\s+(?:is|are)|i am|first one is|second one is)\b",
-            lowered,
-        ):
-            return []
         asking_only = re.search(
             r"\b(ask|collect|take|need|want)\b.*\b(name|names)\b",
             lowered,
@@ -2861,10 +3202,33 @@ class ConversationAgent:
         )
         if asking_only:
             return []
+        stripped = re.sub(r"[\w.+-]+@[\w-]+\.[\w.]+", " ", text)
+        stripped = re.sub(r"(?:\+91[\s-]*)?\d{10}\b", " ", stripped)
+        stripped = re.sub(
+            r"\b(?:email|e-mail|phone|mobile(?:\s+number)?|gender|date of birth|dob|birth)\b",
+            " ",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        stripped = re.sub(
+            r"\b(?:male|female|woman|women|girl|lady|man|men|boy|gentleman)\b",
+            " ",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        stripped = re.sub(
+            r"\b\d{1,2}(?:st|nd|rd|th)?\s+"
+            r"(?:january|jan|february|feb|march|mar|april|apr|may|june|jun|"
+            r"july|jul|august|aug|september|sep|sept|october|oct|november|nov|"
+            r"december|dec)(?:\s+\d{4})?\b",
+            " ",
+            stripped,
+            flags=re.IGNORECASE,
+        )
         cleaned = re.sub(
             r"\b(?:first|second|third|fourth|1st|2nd|3rd|4th)\s*(?:one|guest|person|guy)?\s*(?:is|:)\s*",
             ", ",
-            text,
+            stripped,
             flags=re.IGNORECASE,
         )
         cleaned = re.sub(
@@ -2911,6 +3275,38 @@ class ConversationAgent:
         if stamp >= today:
             return None
         return parsed
+
+    @staticmethod
+    def _profile_email(session: SessionState) -> str:
+        return str(session.memory.contact_email or session.customer_email or "").strip()
+
+    @staticmethod
+    def _profile_phone(session: SessionState) -> str:
+        raw = str(session.memory.contact_phone or session.customer_phone or "")
+        digits = re.sub(r"\D", "", raw)
+        return digits[-10:] if len(digits) >= 10 else ""
+
+    @staticmethod
+    def _seed_profile_contacts(session: SessionState) -> None:
+        email = ConversationAgent._profile_email(session)
+        phone = ConversationAgent._profile_phone(session)
+        if email:
+            session.memory.contact_email = session.memory.contact_email or email
+        if phone:
+            session.memory.contact_phone = session.memory.contact_phone or phone
+
+    @staticmethod
+    def _fill_guest_from_profile(
+        session: SessionState, guest: dict[str, Any], index: int
+    ) -> None:
+        if index != 0:
+            return
+        email = ConversationAgent._profile_email(session)
+        phone = ConversationAgent._profile_phone(session)
+        if email and not guest.get("email"):
+            guest["email"] = email
+        if phone and not guest.get("phone"):
+            guest["phone"] = phone
 
     @staticmethod
     def _guest_missing_fields(guest: dict[str, Any]) -> list[str]:
@@ -2976,6 +3372,9 @@ class ConversationAgent:
     def _collect_event_guests(self, session: SessionState, user_text: str) -> str:
         mem = session.memory
         text = (user_text or "").strip().lower()
+        self._seed_profile_contacts(session)
+        for index, guest in enumerate(session.travelers):
+            self._fill_guest_from_profile(session, guest, index)
         count = self._parse_passenger_count(user_text)
         if count:
             mem.passenger_count = max(1, min(int(count), 10))
@@ -2990,7 +3389,7 @@ class ConversationAgent:
         )
         need = mem.passenger_count or 0
         collecting_names = have == 0 or (need and have < need)
-        if collecting_names and not details_only:
+        if collecting_names:
             parsed_names = self._parse_event_guest_names(user_text)
             for name in parsed_names:
                 if name.lower() in {
@@ -2998,9 +3397,9 @@ class ConversationAgent:
                 }:
                     continue
                 first, last = self._split_full_name(name)
-                session.travelers.append(
-                    {"name": name, "first_name": first, "last_name": last}
-                )
+                guest = {"name": name, "first_name": first, "last_name": last}
+                self._fill_guest_from_profile(session, guest, len(session.travelers))
+                session.travelers.append(guest)
         elif self._wants_event_correction(user_text):
             parsed_names = self._parse_event_guest_names(user_text)
             if parsed_names and session.travelers:
@@ -3029,6 +3428,7 @@ class ConversationAgent:
         if have == 0 and details_only:
             mem.passenger_count = mem.passenger_count or 1
             session.travelers.append({"name": "", "first_name": "", "last_name": ""})
+            self._fill_guest_from_profile(session, session.travelers[0], 0)
             self._apply_event_guest_details(session.travelers[0], user_text)
             mem.flow_step = "event_guests"
             return self._ask_event_guest_details(session.travelers[0], 0)
@@ -3113,34 +3513,13 @@ class ConversationAgent:
         )
 
     @staticmethod
-    def _selected_event_booking_url(session: SessionState) -> Optional[str]:
-        events = session.last_offerings.get("events") or []
-        if not isinstance(events, list):
-            return None
-        selected_id = str(session.memory.selected_event_id or "")
-        picked = None
-        if selected_id:
-            picked = next(
-                (
-                    item
-                    for item in events
-                    if isinstance(item, dict) and str(item.get("id") or "") == selected_id
-                ),
-                None,
-            )
-        if picked is None and len(events) == 1 and isinstance(events[0], dict):
-            picked = events[0]
-        if not isinstance(picked, dict):
-            return None
-        url = picked.get("booking_url") or None
-        if not url:
-            return None
+    def _guest_query_extra(session: SessionState) -> dict[str, Any]:
+        extra: dict[str, Any] = {}
         names = [
             str(item.get("name")).strip()
             for item in session.travelers
             if str(item.get("name") or "").strip()
         ]
-        extra: dict[str, Any] = {}
         payload = []
         for item in session.travelers:
             first, last = ConversationAgent._split_full_name(str(item.get("name") or ""))
@@ -3168,7 +3547,54 @@ class ConversationAgent:
             extra["phone"] = session.memory.contact_phone
         if session.memory.contact_email:
             extra["email"] = session.memory.contact_email
+        return extra
+
+    @staticmethod
+    def _selected_event_booking_url(session: SessionState) -> Optional[str]:
+        events = session.last_offerings.get("events") or []
+        if not isinstance(events, list):
+            return None
+        selected_id = str(session.memory.selected_event_id or "")
+        picked = None
+        if selected_id:
+            picked = next(
+                (
+                    item
+                    for item in events
+                    if isinstance(item, dict) and str(item.get("id") or "") == selected_id
+                ),
+                None,
+            )
+        if picked is None and len(events) == 1 and isinstance(events[0], dict):
+            picked = events[0]
+        if not isinstance(picked, dict):
+            return None
+        url = picked.get("booking_url") or None
+        if not url:
+            return None
+        extra = ConversationAgent._guest_query_extra(session)
         return ConversationAgent._with_query(url, extra) if extra else url
+
+    @staticmethod
+    def _selected_venue_booking_url(session: SessionState) -> Optional[str]:
+        venues = session.last_offerings.get("venues") or []
+        selected_id = str(session.memory.selected_venue_id or "")
+        picked = None
+        if selected_id and isinstance(venues, list):
+            picked = next(
+                (
+                    item
+                    for item in venues
+                    if isinstance(item, dict) and str(item.get("id") or "") == selected_id
+                ),
+                None,
+            )
+        if isinstance(picked, dict) and picked.get("booking_url"):
+            return str(picked["booking_url"])
+        checkout = session.last_offerings.get("venue_checkout") or {}
+        if isinstance(checkout, dict) and checkout.get("booking_url"):
+            return str(checkout["booking_url"])
+        return None
 
     async def _load_event_details(
         self,
@@ -3225,9 +3651,11 @@ class ConversationAgent:
         session.last_offerings["events"] = rows
         session.memory.event_required = True
         names = ", ".join(str(row.get("name") or "event") for row in rows[:3])
+        session.memory.flow_step = "event_add_trip"
         return (
             f"Super Travel also has events in {city}: {names}. "
-            "Say the event name if you want tickets."
+            "Say the event name if you want tickets. "
+            "Would you like me to add this event to your existing trip?"
         )
 
     async def _attach_trains_to_event_city(
@@ -3277,6 +3705,8 @@ class ConversationAgent:
     ) -> Optional[str]:
         mem = session.memory
         text = (user_text or "").strip().lower()
+        if mem.user_goal == "book_venue" or mem.booking_mode == "venue":
+            return None
         if mem.user_goal != "book_event" and mem.booking_mode != "event":
             if not self._is_event_intent(text):
                 return None
@@ -3293,6 +3723,23 @@ class ConversationAgent:
             for item in (session.last_offerings.get("events") or [])
             if isinstance(item, dict)
         ]
+
+        if mem.flow_step == "event_add_trip" and events:
+            if self._user_said_no(user_text):
+                mem.flow_step = "event_pick"
+                return "Okay, just the event. Tell me about one by name."
+            if (
+                self._user_said_yes(user_text)
+                and self._match_event_mention(user_text, events) is None
+                and not self._wants_event_info(user_text)
+            ):
+                mem.event_required = True
+                mem.flow_step = "event_pick"
+                return (
+                    "I'll keep this event with your trip. "
+                    "Tell me about an event by name to book it, or pick a train from the screen."
+                )
+            mem.flow_step = "event_pick"
 
         if mem.flow_step == "event_guests" and mem.selected_event_id:
             return self._collect_event_guests(session, user_text)
@@ -3327,13 +3774,24 @@ class ConversationAgent:
             return None
 
         is_followup = self._is_event_followup(user_text, events)
+        fresh_artist = ConversationAgent._parse_event_artist(user_text)
+        if fresh_artist:
+            mem.event_artist = fresh_artist
 
-        if events and self._wants_event_list_read(user_text):
-            return self._speak_event_names(events)
+        if events and self._wants_event_list_read(user_text) and not fresh_artist:
+            return self._speak_event_names(events, session)
+
+        if events and mem.event_artist and (fresh_artist or re.search(r"\bin the list\b", text)):
+            listed = self._events_for_artist(events, mem.event_artist)
+            if listed:
+                return (
+                    f"Yes — {mem.event_artist} is in this list. "
+                    + self._speak_event_names(listed, session)
+                )
 
         if events and mem.flow_step == "event_pick":
             origin = self._parse_origin_mention(
-                user_text, mem.destination, allow_bare=True
+                user_text, mem.destination, allow_bare=False
             )
             if (
                 origin
@@ -3350,7 +3808,7 @@ class ConversationAgent:
                 if train_bit:
                     return train_bit
 
-        if events:
+        if events and not fresh_artist:
             if self._wants_event_book(user_text):
                 chosen = self._match_event_mention(user_text, events)
                 if chosen is None and len(events) == 1:
@@ -3402,7 +3860,7 @@ class ConversationAgent:
 
         if self._wants_event_list_read(user_text):
             if events:
-                return self._speak_event_names(events)
+                return self._speak_event_names(events, session)
             return None
 
         search_args = self._event_search_args(user_text)
@@ -3411,14 +3869,31 @@ class ConversationAgent:
             for key in ("search", "find", "show me", "another", "other event")
         )
         should_search = not events or explicit_new or bool(
-            search_args.get("city") or search_args.get("search")
+            search_args.get("city")
+            or search_args.get("search")
+            or search_args.get("artist")
+            or mem.event_category
+            or mem.event_artist
         )
         if not should_search:
             return None
 
         args = self._event_search_args(user_text)
-        if not args.get("city") and mem.destination:
-            args["city"] = mem.destination
+        if mem.event_artist and not args.get("artist"):
+            args["artist"] = mem.event_artist
+        if mem.event_category and not args.get("search") and not args.get("artist"):
+            args["search"] = str(mem.event_category).replace("_", " ")
+        if not args.get("city"):
+            city = mem.destination or self._parse_destination_mention(user_text) or self._city_from_text(
+                user_text
+            )
+            if city:
+                args["city"] = city
+        if not args.get("city") and not args.get("artist"):
+            mem.flow_step = "event_search"
+            return "Which city should I search events in? You can say Mumbai, Jaipur, or another city."
+        if args.get("artist"):
+            mem.event_artist = str(args["artist"])
         if args.get("city"):
             mem.destination = mem.destination or str(args["city"])
         result = await self._tools.execute(
@@ -3432,21 +3907,31 @@ class ConversationAgent:
         if isinstance(result, dict) and result.get("error"):
             return result.get("message") or "I could not load events right now."
         rows = result.get("results") if isinstance(result, dict) else None
+        nearby = bool(isinstance(result, dict) and result.get("nearby"))
         mem.flow_step = "event_pick"
         city = str(args.get("city") or mem.destination or "").strip()
-        train_bit = await self._attach_trains_to_event_city(
-            session, tools_used, city
-        )
-        if not rows:
-            base = (
-                f"I did not find matching events in {city}."
-                if city
-                else "I did not find matching events. Try another city, artist, or event name."
+        train_bit = ""
+        if rows and mem.source and not nearby:
+            train_bit = await self._attach_trains_to_event_city(
+                session, tools_used, city
             )
-            if train_bit:
-                return f"{base} {train_bit}"
-            return base
-        speech = self._speak_event_names(rows)
+        if not rows:
+            who = str(args.get("artist") or "").strip()
+            if who and city:
+                return f"I did not find events for {who} in {city} or nearby."
+            if who:
+                return f"I did not find events for {who} right now."
+            if city:
+                return (
+                    f"I did not find events in {city} or nearby cities yet. "
+                    "Try another city or an artist name."
+                )
+            return "I did not find matching events. Try another city, artist, or event name."
+        speech = self._speak_event_names(rows, session)
+        if nearby and city:
+            speech = (
+                f"I did not find events in {city} right now. Nearby, {speech}"
+            )
         if train_bit:
             return f"{speech} {train_bit}"
         return speech
@@ -3474,7 +3959,9 @@ class ConversationAgent:
         # Capture goal from speech only (no Option 1/2 cards).
         if not mem.user_goal or mem.flow_step == "goal":
             matched_goal = None
-            if self._is_event_intent(text):
+            if self._is_venue_intent(text):
+                matched_goal = "book_venue"
+            elif self._is_event_intent(text):
                 matched_goal = "book_event"
             elif self._is_flight_intent(text):
                 matched_goal = "book_flight"
@@ -3517,6 +4004,12 @@ class ConversationAgent:
                     mem.intent = "book"
                     mem.flow_step = "event_search"
                     return None
+                if matched_goal == "book_venue":
+                    mem.booking_mode = "venue"
+                    mem.intent = "book"
+                    mem.flow_step = "venue_search"
+                    ConversationAgent._ingest_venue_slots(mem, user_text)
+                    return await self._handle_venue_flow(session, user_text, tools_used)
                 if matched_goal == "book_hotel":
                     mem.booking_mode = "hotel"
                     mem.hotel_required = True
@@ -3556,10 +4049,17 @@ class ConversationAgent:
         if mem.user_goal == "book_event" or mem.booking_mode == "event":
             return None
 
+        if mem.user_goal == "book_venue" or mem.booking_mode == "venue":
+            return await self._handle_venue_flow(session, user_text, tools_used)
+
         if mem.user_goal == "book_hotel" or mem.booking_mode == "hotel":
             return await self._handle_hotel_flow(session, user_text, tools_used)
 
-        if mem.selected_flight_id and mem.flow_step in {"flight_extras", "flight_open"}:
+        if mem.selected_flight_id and mem.flow_step in {
+            "flight_extras",
+            "flight_guests",
+            "flight_open",
+        }:
             return None
 
         # Trip discovery: route known, mode not chosen yet.
@@ -3648,11 +4148,14 @@ class ConversationAgent:
                     ("personal_work", ("personal work", "office", "work", "business")),
                     ("tourism", ("tourism", "holiday", "vacation")),
                     ("conference", ("conference", "meeting")),
+                    ("emergency", ("emergency", "urgent", "asap")),
+                    ("medical", ("medical", "treatment", "hospital", "surgery")),
                     ("other", ("other",)),
                 ):
                     if any(k in text for k in keys):
                         mem.trip_purpose = purpose
                         break
+                self._apply_purpose_priority(mem)
 
             if mem.source and mem.destination and not mem.departure_date:
                 mem.flow_step = "when"
@@ -3661,25 +4164,8 @@ class ConversationAgent:
                     "When do you want to travel? You can say tomorrow, or 20 September 2026."
                 )
 
-            if (
-                mem.source
-                and mem.destination
-                and mem.departure_date
-                and not mem.passenger_count
-            ):
-                parsed = self._parse_passenger_count(user_text)
-                if parsed:
-                    mem.passenger_count = parsed
-                    mem.adult_count = mem.adult_count or parsed
-                else:
-                    mem.flow_step = "passengers"
-                    session.last_offerings.pop("goals", None)
-                    who = "who is travelling — for example 2 adults, or just me?"
-                    if mem.party_type == "family":
-                        who = "how many adults and children?"
-                    return f"And {who}"
-
-            if mem.source and mem.destination and mem.departure_date and mem.passenger_count and not mem.trip_purpose:
+            # Trip discovery: Where → When → Why → Who (ask purpose before passenger count).
+            if mem.source and mem.destination and mem.departure_date and not mem.trip_purpose:
                 if mem.party_type in {"family", "business"}:
                     mem.trip_purpose = mem.party_type
                 elif (
@@ -3695,6 +4181,41 @@ class ConversationAgent:
                 else:
                     return self._show_purpose_menu(session)
 
+            if mem.flow_step == "medical_reason":
+                pending = self._capture_medical_followup(session, user_text)
+                if pending:
+                    return pending
+
+            if (
+                mem.source
+                and mem.destination
+                and mem.departure_date
+                and mem.trip_purpose
+                and self._needs_medical_followup(mem)
+            ):
+                return self._ask_medical_followup(session)
+
+            if (
+                mem.source
+                and mem.destination
+                and mem.departure_date
+                and mem.trip_purpose
+                and not mem.passenger_count
+            ):
+                parsed = self._parse_passenger_count(user_text)
+                if parsed:
+                    mem.passenger_count = parsed
+                    mem.adult_count = mem.adult_count or parsed
+                else:
+                    mem.flow_step = "passengers"
+                    session.last_offerings.pop("goals", None)
+                    who = "who is travelling — for example 2 adults, or just me?"
+                    if mem.party_type == "family":
+                        who = "how many adults and children?"
+                    return f"And {who}"
+
+            self._apply_purpose_priority(mem)
+
             wants_flight = (
                 mem.user_goal == "book_flight"
                 or mem.transport_type == "flight"
@@ -3708,6 +4229,30 @@ class ConversationAgent:
             already_picked = bool(
                 mem.selected_flight_id if wants_flight else mem.selected_train_id
             )
+
+            if (
+                wants_flight
+                and not mem.travel_class
+                and re.search(r"\b(skip|any(?: class)?|doesn'?t matter|does not matter)\b", text)
+            ):
+                mem.travel_class = "economy"
+
+            if (
+                wants_flight
+                and mem.source
+                and mem.destination
+                and mem.departure_date
+                and mem.passenger_count
+                and mem.trip_purpose
+                and not mem.travel_class
+                and not already_searched
+                and not already_picked
+            ):
+                mem.flow_step = "cabin"
+                return (
+                    "Which cabin — economy, premium economy, or business class? "
+                    "Say skip to search economy."
+                )
 
             # Ready to search once — auto normal booking, no mode quiz.
             if (
@@ -3742,6 +4287,8 @@ class ConversationAgent:
                 else:
                     args["passengers"] = min(int(mem.passenger_count), 9)
                     args["preference"] = mem.train_preference or mem.value_priority or "balanced"
+                    if mem.trip_purpose == "emergency":
+                        args["preference"] = "fastest"
                     if args["preference"] not in {"cheapest", "fastest", "ac", "balanced", "wishlist"}:
                         args["preference"] = "balanced"
                     tool_name = "search_trains"
@@ -3856,6 +4403,473 @@ class ConversationAgent:
             or f"I could not find hotels in {city} for those dates."
         )
 
+    _VENUE_EVENT_TYPES = (
+        ("wedding", ("wedding", "marriage", "shaadi")),
+        ("birthday", ("birthday", "bday")),
+        ("engagement", ("engagement",)),
+        ("anniversary", ("anniversary",)),
+        ("reception", ("reception",)),
+        ("sangeet", ("sangeet",)),
+        ("corporate", ("corporate", "office party", "product launch")),
+        ("conference", ("conference", "seminar", "meeting")),
+        ("party", ("party", "get together", "get-together")),
+        ("exhibition", ("exhibition", "expo")),
+    )
+
+    _TICKETED_EVENT_TYPES = (
+        ("concert", ("concert", "live music", "gig", "music show")),
+        ("comedy", ("comedy", "standup", "stand up", "stand-up")),
+        ("festival", ("festival", "fest")),
+        ("sports", ("sports event", "sports match", "cricket match", "football match")),
+        ("theme_park", ("theme park", "amusement park")),
+        ("exhibition", ("exhibition", "expo", "art show")),
+        ("attraction", ("attraction",)),
+    )
+
+    _PRIVATE_VENUE_OCCASIONS = (
+        "baby shower",
+        "naming ceremony",
+        "pooja",
+        "puja",
+        "mehendi",
+        "mehndi",
+        "haldi",
+        "kitty party",
+        "farewell",
+        "reunion",
+        "housewarming",
+        "mundan",
+        "thread ceremony",
+        "cocktail party",
+        "dinner party",
+        "fundraiser",
+    )
+
+    @staticmethod
+    def _parse_venue_event_type(user_text: str) -> Optional[str]:
+        text = (user_text or "").lower()
+        for value, keys in ConversationAgent._VENUE_EVENT_TYPES:
+            if any(re.search(rf"\b{re.escape(key)}\b", text) for key in keys):
+                return value
+        return None
+
+    @staticmethod
+    def _parse_ticketed_event_type(user_text: str) -> Optional[str]:
+        text = (user_text or "").lower()
+        if re.search(r"\bvenues?\b", text):
+            return None
+        for value, keys in ConversationAgent._TICKETED_EVENT_TYPES:
+            if any(re.search(rf"\b{re.escape(key)}\b", text) for key in keys):
+                return value
+        return None
+
+    @staticmethod
+    def _is_other_event_choice(user_text: str) -> bool:
+        text = (user_text or "").strip().lower()
+        return bool(
+            re.fullmatch(r"(?:something else|other(?: event)?|other one)[.!?]*", text)
+            or re.search(r"\b(something else|other event)\b", text)
+        )
+
+    @staticmethod
+    def _private_venue_occasion(user_text: str) -> Optional[str]:
+        text = (user_text or "").lower()
+        for key in ConversationAgent._PRIVATE_VENUE_OCCASIONS:
+            if re.search(rf"\b{re.escape(key)}\b", text):
+                return key
+        return None
+
+    @staticmethod
+    def _clean_event_search_label(user_text: str) -> Optional[str]:
+        text = re.sub(r"\s+", " ", (user_text or "").strip())
+        text = re.sub(r"[.!?]+$", "", text)
+        text = re.sub(
+            r"^(?:it'?s|it is|maybe|perhaps|a|an|the)\s+",
+            "",
+            text,
+            flags=re.I,
+        ).strip()
+        lowered = text.lower()
+        if not text or len(text) < 3:
+            return None
+        if ConversationAgent._is_other_event_choice(text):
+            return None
+        if re.search(
+            r"\b(skip|later|not sure|don'?t know|do not know|undecided|no idea)\b",
+            lowered,
+        ):
+            return None
+        if ConversationAgent._looks_like_city(text):
+            return None
+        return text[:60]
+
+    @staticmethod
+    def _parse_venue_kind(user_text: str) -> Optional[str]:
+        text = (user_text or "").lower()
+        if re.search(r"\b(government|govt|sarkari)\b", text):
+            return "government"
+        if re.search(r"\b(banquet|lawn|farmhouse|party hall|marriage hall)\b", text):
+            return "banquet"
+        if re.search(r"\bhotels?\b", text):
+            return "hotel"
+        if re.search(
+            r"\b(no preference|any(?:\s+venue|\s+kind)?|either|whatever|doesn't matter|does not matter)\b",
+            text,
+        ):
+            return "any"
+        return None
+
+    @staticmethod
+    def _parse_venue_services(user_text: str) -> Optional[str]:
+        text = (user_text or "").lower()
+        wants_food = bool(re.search(r"\b(food|catering|cater|meals?|menu)\b", text))
+        wants_decor = bool(re.search(r"\b(decorations?|decor|floral|flowers?)\b", text))
+        if wants_food and wants_decor or re.search(r"\b(both|all services|everything)\b", text):
+            return "food_decoration"
+        if wants_food:
+            return "food"
+        if wants_decor:
+            return "decoration"
+        if re.search(
+            r"\b(just the venue|venue only|only the venue|no(?:t)? (?:needed|required)|none)\b",
+            text,
+        ):
+            return "none"
+        return None
+
+    @staticmethod
+    def _scale_budget(amount: float, unit: Optional[str]) -> Optional[float]:
+        unit = (unit or "").strip()
+        if unit in {"lakh", "lakhs", "lac", "lacs"}:
+            amount *= 100000
+        elif unit in {"crore", "crores"}:
+            amount *= 10000000
+        elif unit in {"thousand", "k"}:
+            amount *= 1000
+        if amount <= 0:
+            return None
+        return amount
+
+    @staticmethod
+    def _parse_budget_amount(user_text: str) -> Optional[float]:
+        text = ConversationAgent._words_to_nums(user_text or "").lower().replace(",", "")
+        explicit = re.search(
+            r"budget(?:\s*(?:of|is|:))?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*"
+            r"(lakh|lakhs|lac|lacs|crore|crores|thousand|k)?",
+            text,
+        )
+        if explicit:
+            return ConversationAgent._scale_budget(float(explicit.group(1)), explicit.group(2))
+        unit = re.search(
+            r"(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*"
+            r"(lakh|lakhs|lac|lacs|crore|crores|thousand)\b",
+            text,
+        )
+        if unit:
+            return ConversationAgent._scale_budget(float(unit.group(1)), unit.group(2))
+        rupees = re.search(r"(?:rs\.?|inr|₹)\s*(\d+(?:\.\d+)?)", text)
+        if rupees:
+            return ConversationAgent._scale_budget(float(rupees.group(1)), None)
+        bare = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*", text)
+        if bare:
+            return ConversationAgent._scale_budget(float(bare.group(1)), None)
+        return None
+
+    @staticmethod
+    def _ingest_venue_slots(mem: Any, user_text: str) -> None:
+        text = (user_text or "").strip().lower()
+        event_type = ConversationAgent._parse_venue_event_type(user_text)
+        if event_type:
+            mem.venue_event_type = event_type
+        elif not mem.venue_event_type:
+            ticketed = ConversationAgent._parse_ticketed_event_type(user_text)
+            if ticketed:
+                mem.event_category = ticketed
+            elif mem.flow_step == "venue_event_other":
+                private = ConversationAgent._private_venue_occasion(user_text)
+                if private:
+                    mem.venue_event_type = private
+                elif re.search(
+                    r"\b(skip|later|not sure|don'?t know|do not know|undecided)\b",
+                    text,
+                ):
+                    mem.venue_event_type = "other"
+                else:
+                    label = ConversationAgent._clean_event_search_label(user_text)
+                    if label:
+                        mem.event_category = label
+        kind = ConversationAgent._parse_venue_kind(user_text)
+        if kind:
+            mem.venue_kind = kind
+        elif mem.flow_step == "venue_kind" and re.search(r"\bskip\b", text):
+            mem.venue_kind = "any"
+        services = ConversationAgent._parse_venue_services(user_text)
+        if services:
+            mem.venue_services = services
+        elif mem.flow_step == "venue_services" and (
+            ConversationAgent._user_said_no(user_text) or "skip" in text
+        ):
+            mem.venue_services = "none"
+        city = ConversationAgent._parse_destination_mention(user_text) or ConversationAgent._city_from_text(
+            user_text
+        )
+        if not city and mem.flow_step == "venue_location":
+            stripped = re.sub(r"[^\w\s]", " ", user_text or "").strip()
+            if ConversationAgent._looks_like_city(stripped):
+                city = ConversationAgent._title_city(stripped)
+        if city:
+            mem.destination = city
+        parsed_count = ConversationAgent._parse_passenger_count(user_text)
+        if parsed_count:
+            mem.passenger_count = parsed_count
+            mem.adult_count = mem.adult_count or parsed_count
+        date = ConversationAgent._parse_date_from_text(user_text)
+        if date:
+            mem.departure_date = date
+        elif mem.flow_step == "venue_date" and re.search(
+            r"\b(skip|later|not sure|undecided|no date|flexible)\b", text
+        ):
+            mem.date_flexible = True
+        budget_hint = (
+            mem.flow_step == "venue_budget"
+            or "budget" in text
+            or bool(re.search(r"\b(lakh|lakhs|lac|lacs|crore)\b", text))
+        )
+        if budget_hint:
+            if re.search(r"\b(skip|no budget|any budget|flexible|doesn't matter|does not matter)\b", text):
+                mem.budget = 0
+            else:
+                amount = ConversationAgent._parse_budget_amount(user_text)
+                if amount:
+                    mem.budget = amount
+        if mem.flow_step == "venue_kind" and not mem.venue_kind:
+            parsed_kind = ConversationAgent._parse_venue_kind(user_text)
+            if parsed_kind:
+                mem.venue_kind = parsed_kind
+        if mem.flow_step == "venue_services" and not mem.venue_services:
+            if ConversationAgent._user_said_no(user_text) or "skip" in text:
+                mem.venue_services = "none"
+
+    @staticmethod
+    def _wants_open_venue_pages(user_text: str) -> bool:
+        text = (user_text or "").lower()
+        return bool(
+            re.search(
+                r"\b("
+                r"open (?:the )?(?:list|page|venues?)|"
+                r"send (?:an |a )?rfps?|"
+                r"send (?:the )?proposal|"
+                r"show (?:the )?list|"
+                r"event compan(?:y|ies)"
+                r")\b",
+                text,
+            )
+        )
+
+    def _speak_venue_names(self, rows: list[dict[str, Any]]) -> str:
+        lines = []
+        for index, row in enumerate(rows[:6], 1):
+            name = str(row.get("name") or "Venue").strip()
+            hint = str(row.get("hint") or "").strip()
+            label = f"Option {index}, {name}"
+            if hint:
+                label = f"{label}, {hint}"
+            lines.append(label)
+        spoken = ". Next. ".join(lines)
+        return (
+            f"Here are venues on your screen. {spoken}. "
+            "Say a venue name to open its RFP page, or say open the list."
+        )
+
+    def _venue_services_note(self, mem: Any) -> str:
+        services = mem.venue_services or "none"
+        if services == "food_decoration":
+            return "Need food and decoration through event companies."
+        if services == "food":
+            return "Need food / catering through an event company."
+        if services == "decoration":
+            return "Need decoration through an event company."
+        return ""
+
+    async def _switch_to_ticketed_events(
+        self, session: SessionState, user_text: str, tools_used: list[str]
+    ) -> str:
+        mem = session.memory
+        mem.user_goal = "book_event"
+        mem.booking_mode = "event"
+        mem.intent = "book"
+        mem.flow_step = "event_search"
+        spoken = await self._handle_event_flow(session, user_text, tools_used)
+        if spoken:
+            kind = str(mem.event_category or "").replace("_", " ")
+            if kind and "which city" in spoken.lower():
+                return f"I can show live {kind} events. {spoken}"
+            return spoken
+        kind = str(mem.event_category or "those").replace("_", " ")
+        return (
+            f"I can show live {kind} events. "
+            "Which city should I search events in?"
+        )
+
+    async def _handle_venue_flow(
+        self, session: SessionState, user_text: str, tools_used: list[str]
+    ) -> Optional[str]:
+        mem = session.memory
+        mem.user_goal = "book_venue"
+        mem.booking_mode = "venue"
+        mem.intent = "book"
+        self._ingest_venue_slots(mem, user_text)
+        text = (user_text or "").strip().lower()
+
+        venues = [
+            item
+            for item in (session.last_offerings.get("venues") or [])
+            if isinstance(item, dict)
+        ]
+        if mem.flow_step == "venue_open":
+            mem.flow_step = "venue_pick" if venues else "venue_search"
+            if mem.selected_venue_id:
+                return (
+                    "The RFP page is open. Add food, decoration, and event-company needs "
+                    "in additional requirements, then submit. Proposals show under your RFPs."
+                )
+            return (
+                "The venue list is open. Say a venue name to send an RFP, "
+                "or pick one on the page."
+            )
+
+        if (
+            mem.flow_step in {"venue_event_type", "venue_event_other"}
+            and mem.event_category
+            and not mem.venue_event_type
+            and not re.search(r"\bvenues?\b", text)
+        ):
+            return await self._switch_to_ticketed_events(session, user_text, tools_used)
+
+        if not mem.venue_event_type:
+            if mem.flow_step == "venue_event_other":
+                return VENUE_OTHER_ASK_LINE
+            if ConversationAgent._is_other_event_choice(user_text):
+                mem.flow_step = "venue_event_other"
+                return VENUE_OTHER_ASK_LINE
+            mem.flow_step = "venue_event_type"
+            return (
+                "What is the event you want to book a venue for — "
+                "wedding, birthday, corporate, conference, or something else?"
+            )
+        if not mem.passenger_count:
+            mem.flow_step = "venue_guests"
+            return "How many guests are you expecting?"
+        city = mem.destination or mem.hotel_area
+        if not city:
+            mem.flow_step = "venue_location"
+            return "Which city or location are you looking to do your event in?"
+        if not mem.departure_date and not mem.date_flexible:
+            mem.flow_step = "venue_date"
+            return "What date is the event? You can say skip if you are still deciding."
+        if not mem.venue_kind:
+            mem.flow_step = "venue_kind"
+            return (
+                "Would you prefer a hotel, a banquet, or a government venue? "
+                "You can also say no preference."
+            )
+        if not mem.venue_services:
+            mem.flow_step = "venue_services"
+            return (
+                "Would you also need food, decoration, or other event services? "
+                "We can recommend event companies through the RFP. "
+                "Say food, decoration, both, or just the venue."
+            )
+        if mem.budget is None:
+            mem.flow_step = "venue_budget"
+            return (
+                "If you have a particular budget, tell me the amount. "
+                "Or say skip, and we can still send RFPs."
+            )
+
+        if venues:
+            matched = self._match_option(user_text, venues)
+            if matched is None and not self._wants_open_venue_pages(user_text):
+                named = next(
+                    (
+                        row
+                        for row in venues
+                        if str(row.get("name") or "").lower() in text and row.get("name")
+                    ),
+                    None,
+                )
+                matched = named
+            if matched is not None:
+                mem.selected_venue_id = str(matched.get("id") or "")
+                mem.flow_step = "venue_open"
+                name = matched.get("name") or "that venue"
+                return (
+                    f"Opening the RFP page for {name}. "
+                    "Add food, decoration, and event-company needs in additional requirements. "
+                    "After you send it, proposals show under your RFPs."
+                )
+            if self._wants_open_venue_pages(user_text) or self._user_said_yes(user_text):
+                mem.selected_venue_id = None
+                mem.flow_step = "venue_open"
+                return (
+                    "Opening the venue list so you can send RFPs. "
+                    "Food and decoration can go in additional requirements for event companies. "
+                    "Your RFPs then show on the proposals page."
+                )
+            if self._wants_event_list_read(user_text):
+                return self._speak_venue_names(venues)
+            mem.flow_step = "venue_pick"
+            return (
+                "Venues are on your screen. Say a venue name, or say open the list "
+                "to send RFPs and add event-company services."
+            )
+
+        args = {
+            "city": city,
+            "event_type": mem.venue_event_type,
+            "venue_kind": None if mem.venue_kind in {None, "any"} else mem.venue_kind,
+            "guests": mem.passenger_count,
+            "event_date": mem.departure_date,
+            "budget": mem.budget if mem.budget and mem.budget > 0 else None,
+            "services": mem.venue_services if mem.venue_services != "none" else None,
+        }
+        result = await self._tools.execute(
+            "search_venues",
+            args,
+            session_id=session.session_id,
+            user_access_token=session.user_access_token,
+        )
+        tools_used.append("search_venues")
+        self._update_memory_from_tool(session, "search_venues", args, result)
+        mem = session.memory
+        if isinstance(result, dict) and result.get("error") == "login_required":
+            return "Please log in to Super Travel first, then I can show venues and send RFPs."
+        rows = result.get("results") if isinstance(result, dict) else None
+        list_url = result.get("booking_url") if isinstance(result, dict) else None
+        if list_url:
+            session.last_offerings["venue_checkout"] = {
+                "booking_url": list_url,
+                "rfp_url": result.get("rfp_url") if isinstance(result, dict) else None,
+            }
+        mem.flow_step = "venue_open"
+        note = self._venue_services_note(mem)
+        extra = f" {note}" if note else ""
+        if rows:
+            spoken = self._speak_venue_names(rows)
+            return (
+                f"{spoken} Opening the venue list so you can send RFPs.{extra} "
+                "Pick a venue, or say a name."
+            )
+        fail = ""
+        if isinstance(result, dict):
+            fail = str(result.get("message") or "")
+        if fail:
+            return fail
+        return (
+            f"I could not find matching venues in {city} yet. "
+            "Opening the venue list so you can still send an RFP and add event-company needs."
+        )
+
     async def _handle_pnr_support(
         self, session: SessionState, user_text: str, tools_used: list[str]
     ) -> Optional[str]:
@@ -3962,7 +4976,10 @@ class ConversationAgent:
     ) -> Optional[str]:
         """When user states >9 people, steer to full coach (72 seats), not split tickets."""
         mem = session.memory
-        if mem.user_goal == "book_event" or mem.booking_mode == "event":
+        if mem.user_goal in {"book_event", "book_venue"} or mem.booking_mode in {
+            "event",
+            "venue",
+        }:
             return None
         count = mem.passenger_count or 0
         if count <= 9 and mem.booking_mode != "charter":
@@ -5099,8 +6116,42 @@ class ConversationAgent:
                 return row
         return self._match_option(user_text, rows)
 
+    def _flight_passengers_ready(self, session: SessionState) -> bool:
+        if not session.travelers:
+            return False
+        return all(not self._guest_missing_fields(guest) for guest in session.travelers)
+
+    def _flight_passenger_booking_url(self, session: SessionState) -> Optional[str]:
+        checkout = session.last_offerings.get("flight_checkout") or {}
+        url = str(checkout.get("booking_url") or "").strip()
+        if not url:
+            return None
+        url = url.replace("/preview/flights/review", "/flight-details")
+        url = url.replace("/preview/flights/search", "/flights")
+        if "/flight-details" not in url:
+            from urllib.parse import urlsplit, urlunsplit
+
+            parts = urlsplit(url)
+            url = urlunsplit((parts.scheme, parts.netloc, "/flight-details", "", ""))
+        extra = self._guest_query_extra(session)
+        return self._with_query(url, extra) if extra else url
+
+    def _collect_flight_passengers(self, session: SessionState, user_text: str) -> str:
+        reply = self._collect_event_guests(session, user_text)
+        if session.memory.flow_step == "event_open":
+            return self._open_flight_checkout(session)
+        session.memory.flow_step = "flight_guests"
+        return reply
+
     def _open_flight_checkout(self, session: SessionState, prefix: str = "") -> str:
         mem = session.memory
+        if not self._flight_passengers_ready(session):
+            mem.flow_step = "flight_guests"
+            ask = self._collect_flight_passengers(session, "")
+            if mem.flow_step == "flight_open":
+                return ask
+            lead = f"{prefix.strip()} " if prefix and prefix.strip() else ""
+            return f"{lead}{ask}".strip()
         mem.flow_step = "flight_open"
         for key in self._FLIGHT_EXTRA_KEYS:
             session.last_offerings.pop(key, None)
@@ -5121,15 +6172,20 @@ class ConversationAgent:
             bits.append("priority check-in")
         extras = f" Noted: {', '.join(bits)}." if bits else ""
         lead = f"{prefix.strip()} " if prefix and prefix.strip() else ""
-        checkout = session.last_offerings.get("flight_checkout") or {}
-        url = checkout.get("booking_url") if isinstance(checkout, dict) else None
+        url = self._flight_passenger_booking_url(session)
         if url:
+            session.last_offerings["flight_checkout"] = {"booking_url": url}
+            named = ", ".join(
+                str(item.get("name") or item.get("first_name") or "passenger")
+                for item in session.travelers
+            )
             return (
-                f"{lead}I'm opening the flight checkout page so you can finish "
-                f"passenger details and payment.{extras}"
+                f"{lead}I'm opening the passenger details page with {named} filled in. "
+                f"Check the form and continue to payment.{extras}"
             ).strip()
         return (
-            f"{lead}Finish passenger details and payment on the Super Travel flights page.{extras}"
+            f"{lead}Finish passenger details and payment on the Super Travel "
+            f"flight details page.{extras}"
         ).strip()
 
     def _prompt_next_flight_extra(
@@ -5177,8 +6233,16 @@ class ConversationAgent:
         mem = session.memory
         if not mem.selected_flight_id:
             return None
+        if mem.flow_step == "flight_guests":
+            return self._collect_flight_passengers(session, user_text)
         if mem.flow_step == "flight_open":
-            return None
+            if self._wants_event_correction(user_text):
+                mem.flow_step = "flight_guests"
+                return self._collect_flight_passengers(session, user_text)
+            return (
+                "The passenger details page is open with the names filled. "
+                "Continue there to pay. If a detail is wrong, say what to change."
+            )
         priced = session.last_offerings.get("flight_priced")
         if not isinstance(priced, dict):
             return None

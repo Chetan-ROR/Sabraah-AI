@@ -47,6 +47,36 @@ def _attach_user_token(session, token: Optional[str]) -> bool:
     return True
 
 
+def _attach_customer_profile(
+    session,
+    *,
+    name: Optional[str] = None,
+    phone: Optional[str] = None,
+    email: Optional[str] = None,
+) -> bool:
+    import re
+
+    changed = False
+    cleaned_name = (name or "").strip()
+    if cleaned_name and not session.customer_name:
+        session.customer_name = cleaned_name
+        changed = True
+    digits = re.sub(r"\D", "", phone or "")
+    if len(digits) >= 10:
+        compact = digits[-10:]
+        if session.customer_phone != compact:
+            session.customer_phone = compact
+            session.memory.contact_phone = session.memory.contact_phone or compact
+            changed = True
+    cleaned_email = (email or "").strip()
+    if cleaned_email and "@" in cleaned_email:
+        if session.customer_email != cleaned_email:
+            session.customer_email = cleaned_email
+            session.memory.contact_email = session.memory.contact_email or cleaned_email
+            changed = True
+    return changed
+
+
 def _session_summary(session) -> dict:
     visible = [
         m for m in session.conversation_history if m.role in {"user", "assistant"}
@@ -268,6 +298,13 @@ async def chat_text(
             changed = True
         if _attach_user_token(session, body.user_access_token):
             changed = True
+        if _attach_customer_profile(
+            session,
+            name=body.customer_name,
+            phone=body.customer_phone,
+            email=body.customer_email,
+        ):
+            changed = True
         if changed:
             await sessions.save(session)
     try:
@@ -284,12 +321,25 @@ async def chat_voice(
     session_id: str = Form(...),
     audio: UploadFile = File(...),
     user_access_token: Optional[str] = Form(default=None),
+    customer_name: Optional[str] = Form(default=None),
+    customer_phone: Optional[str] = Form(default=None),
+    customer_email: Optional[str] = Form(default=None),
     agent: ConversationAgent = Depends(get_agent),
     sessions: SessionStore = Depends(get_sessions),
 ) -> ChatResponse:
-    if user_access_token:
-        session = await sessions.get(session_id)
-        if session is not None and _attach_user_token(session, user_access_token):
+    session = await sessions.get(session_id)
+    if session is not None:
+        changed = False
+        if _attach_user_token(session, user_access_token):
+            changed = True
+        if _attach_customer_profile(
+            session,
+            name=customer_name,
+            phone=customer_phone,
+            email=customer_email,
+        ):
+            changed = True
+        if changed:
             await sessions.save(session)
     audio_bytes = await audio.read()
     filename = audio.filename or "audio.webm"

@@ -131,6 +131,28 @@ class FakeTravelClient(TravelBackendClient):
                 "provider": "MOCK",
                 "count": 1,
             }
+        if path in {"/api/v1/users/venues", "/api/v1/users/venues/"}:
+            return {
+                "results": [
+                    {
+                        "id": 21,
+                        "name": "Royal Banquet Jaipur",
+                        "type": "banquet",
+                        "category_name": "Banquet",
+                        "capacity": 300,
+                        "price": "45000",
+                    },
+                    {
+                        "id": 22,
+                        "name": "Hotel Amber Lawn",
+                        "type": "hotel",
+                        "category_name": "Hotel",
+                        "capacity": 200,
+                        "price": "80000",
+                    },
+                ],
+                "count": 2,
+            }
         if path == "/api/v1/flights/search":
             return {
                 "tui": "tui-test",
@@ -408,7 +430,8 @@ def test_text_chat_basic(client) -> None:
     )
     assert response.status_code == 200
     data = response.json()
-    assert "Tell me the trip" in data["assistant_text"] or "flight" in data["assistant_text"].lower()
+    assert "sabrah" in data["assistant_text"].lower()
+    assert "on your mind" in data["assistant_text"].lower()
     assert data["audio_base64"] == base64.b64encode(b"FAKEMP3").decode("ascii")
     assert stack["tts"].texts
 
@@ -482,11 +505,11 @@ def _book_train_until_search(test_client, session: str, route: str = "Delhi to M
     )
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "One passenger."},
+        json={"session_id": session, "message": "Other."},
     )
     return test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Other."},
+        json={"session_id": session, "message": "One passenger."},
     )
 
 
@@ -682,7 +705,7 @@ def test_voice_wake_phrase_greets(client) -> None:
     data = response.json()
     assert data.get("ignored") is not True
     assert "sabrah" in data["assistant_text"].lower()
-    assert "flight" in data["assistant_text"].lower()
+    assert "on your mind" in data["assistant_text"].lower()
 
 
 def test_guided_flight_search_not_trains(client) -> None:
@@ -692,7 +715,8 @@ def test_guided_flight_search_not_trains(client) -> None:
         "/api/v1/chat/text",
         json={"session_id": session, "message": "Hi Sabrah"},
     )
-    assert "flight" in greet.json()["assistant_text"].lower()
+    assert "sabrah" in greet.json()["assistant_text"].lower()
+    assert "on your mind" in greet.json()["assistant_text"].lower()
     where = test_client.post(
         "/api/v1/chat/text",
         json={"session_id": session, "message": "I want to book a flight."},
@@ -714,11 +738,18 @@ def test_guided_flight_search_not_trains(client) -> None:
     )
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "One passenger."},
+        json={"session_id": session, "message": "Other."},
     )
     found = test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Other."},
+        json={"session_id": session, "message": "One passenger."},
+    )
+    data = found.json()
+    assert found.status_code == 200
+    assert "cabin" in data["assistant_text"].lower() or "economy" in data["assistant_text"].lower()
+    found = test_client.post(
+        "/api/v1/chat/text",
+        json={"session_id": session, "message": "Economy."},
     )
     data = found.json()
     assert found.status_code == 200
@@ -799,11 +830,15 @@ def test_guided_flight_asks_fare_and_extras(client) -> None:
     )
     test_client.post(
         "/api/v1/chat/text",
+        json={"session_id": session, "message": "Other."},
+    )
+    found = test_client.post(
+        "/api/v1/chat/text",
         json={"session_id": session, "message": "One passenger."},
     )
     found = test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Other."},
+        json={"session_id": session, "message": "Economy."},
     )
     assert found.json()["offerings"].get("flights")
 
@@ -850,9 +885,25 @@ def test_guided_flight_asks_fare_and_extras(client) -> None:
     )
     done_data = done.json()
     done_text = done_data["assistant_text"].lower()
-    assert "opening" in done_text or "checkout" in done_text
-    assert done_data.get("open_booking") is True
-    extras = (done_data.get("booking_details") or {}).get("flight_extras") or {}
+    assert "name" in done_text
+    assert done_data.get("open_booking") is not True
+
+    opened = test_client.post(
+        "/api/v1/chat/text",
+        json={
+            "session_id": session,
+            "message": (
+                "Rahul Sharma, rahul@gmail.com, 9876543210, male, 12 January 1990"
+            ),
+        },
+    )
+    opened_data = opened.json()
+    opened_text = opened_data["assistant_text"].lower()
+    assert "opening" in opened_text or "passenger details" in opened_text
+    assert opened_data.get("open_booking") is True
+    assert "/flight-details" in (opened_data.get("booking_url") or "")
+    assert "/preview/flights/review" not in (opened_data.get("booking_url") or "")
+    extras = (opened_data.get("booking_details") or {}).get("flight_extras") or {}
     assert extras.get("fare") == "SAVER"
     assert extras.get("meal") == "skip"
     assert "5" in str(extras.get("baggage") or "")
@@ -908,11 +959,15 @@ def _book_flight_until_options(test_client, session: str):
     )
     test_client.post(
         "/api/v1/chat/text",
+        json={"session_id": session, "message": "Other."},
+    )
+    test_client.post(
+        "/api/v1/chat/text",
         json={"session_id": session, "message": "One passenger."},
     )
     return test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Other."},
+        json={"session_id": session, "message": "Economy."},
     )
 
 
@@ -1011,11 +1066,11 @@ def test_train_search_hides_generic_server_error(client) -> None:
     )
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "One passenger."},
+        json={"session_id": session, "message": "Other."},
     )
     found = test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Other."},
+        json={"session_id": session, "message": "One passenger."},
     )
     text = found.json()["assistant_text"].lower()
     assert found.status_code == 200

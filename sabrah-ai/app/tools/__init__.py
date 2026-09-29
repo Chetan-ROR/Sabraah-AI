@@ -6,6 +6,7 @@ import json
 import logging
 from datetime import date
 from typing import Any, Awaitable, Callable, Dict, Optional, Union
+from urllib.parse import urlencode
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -33,6 +34,16 @@ class SearchLocalTransportArgs(BaseModel):
     pickup: Optional[str] = None
     dropoff: Optional[str] = None
     transport_type: Optional[str] = None
+
+
+class SearchVenuesArgs(BaseModel):
+    city: str
+    event_type: Optional[str] = None
+    venue_kind: Optional[str] = None
+    guests: Optional[int] = None
+    event_date: Optional[str] = None
+    budget: Optional[float] = None
+    services: Optional[str] = None
 
 
 class SearchEventsArgs(BaseModel):
@@ -527,6 +538,29 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "search_venues",
+            "description": (
+                "Search Super Travel event venues (banquet, hotel venue, government venue). "
+                "Not concert tickets. Use for wedding halls, corporate venues, and RFPs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string"},
+                    "event_type": {"type": "string"},
+                    "venue_kind": {"type": "string"},
+                    "guests": {"type": "integer"},
+                    "event_date": {"type": "string"},
+                    "budget": {"type": "number"},
+                    "services": {"type": "string"},
+                },
+                "required": ["city"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_events",
             "description": (
                 "Search live Super Travel events for the logged-in user. "
@@ -642,6 +676,7 @@ class TravelToolExecutor:
             "search_flights": self._search_flights,
             "search_buses": self._search_buses,
             "search_hotels": self._search_hotels,
+            "search_venues": self._search_venues,
             "search_packages": self._search_packages,
             "create_package_plan": self._create_package_plan,
             "search_local_transport": self._search_local_transport,
@@ -918,11 +953,28 @@ class TravelToolExecutor:
             "count": 0,
         }
 
-    def _map_flight_card(self, row: dict[str, Any], *, search_tui: str = "") -> dict[str, Any]:
+    def _map_flight_card(
+        self, row: dict[str, Any], *, search_tui: str = "", cabin: str = ""
+    ) -> dict[str, Any]:
         selection = row.get("selection") if isinstance(row.get("selection"), dict) else {}
         flight_id = str(
             selection.get("index") or row.get("index") or row.get("flight_number") or ""
         )
+        cabin_name = (
+            row.get("cabin")
+            or row.get("travel_class")
+            or row.get("class_name")
+            or cabin
+            or "economy"
+        )
+        stops = row.get("stops")
+        stop_bit = "Non-stop" if not stops else f"{stops} stop" + ("s" if int(stops or 0) != 1 else "")
+        try:
+            stop_bit = "Non-stop" if not int(stops or 0) else (
+                f"{stops} stop" if int(stops) == 1 else f"{stops} stops"
+            )
+        except (TypeError, ValueError):
+            stop_bit = ""
         return {
             "id": flight_id,
             "name": row.get("flight_number") or row.get("airline_name") or flight_id,
@@ -932,6 +984,8 @@ class TravelToolExecutor:
             "arrival_time": row.get("arrival_time"),
             "duration": row.get("duration"),
             "stops": row.get("stops"),
+            "cabin": cabin_name,
+            "travel_class": cabin_name,
             "price": row.get("price") or row.get("gross_fare"),
             "price_label": row.get("price_label") or row.get("gross_fare_label"),
             "currency": "INR",
@@ -940,6 +994,9 @@ class TravelToolExecutor:
             "selection": selection,
             "flight_fares": row.get("flight_fares") or [],
             "search_tui": search_tui or selection.get("tui"),
+            "hint": " · ".join(
+                part for part in (stop_bit, row.get("duration") or "") if part
+            ),
         }
 
     async def _search_flights(
@@ -987,13 +1044,13 @@ class TravelToolExecutor:
                 flights = rt["flights"]
         search_tui = str(data.get("tui") or "")
         results = [
-            self._map_flight_card(row, search_tui=search_tui)
+            self._map_flight_card(row, search_tui=search_tui, cabin=cabin)
             for row in flights
             if isinstance(row, dict)
         ][:8]
         continue_url = ""
         if self._client._web_app_base_url:
-            continue_url = f"{self._client._web_app_base_url}/preview/flights/search"
+            continue_url = f"{self._client._web_app_base_url}/flights"
         return {
             "results": results,
             "count": len(results),
@@ -1067,6 +1124,106 @@ class TravelToolExecutor:
             "check_out": args.check_out,
         }
 
+    async def _search_venues(
+        self, arguments: dict[str, Any], session_id: Optional[str]
+    ) -> dict[str, Any]:
+        args = SearchVenuesArgs.model_validate(arguments)
+        search_bits = [args.city]
+        if args.venue_kind:
+            search_bits.append(args.venue_kind.replace("_", " "))
+        if args.event_type:
+            search_bits.append(args.event_type.replace("_", " "))
+        params: dict[str, Any] = {
+            "search": " ".join(part for part in search_bits if part).strip(),
+            "page": 1,
+            "page_size": 8,
+        }
+        if args.budget and args.budget > 0:
+            params["min_price"] = 0
+            params["max_price"] = int(args.budget)
+        data = await self._client.request(
+            "GET",
+            "/api/v1/users/venues",
+            params=params,
+            session_id=session_id,
+            user_access_token=self._user_access_token,
+        )
+        rows = data.get("results") or data.get("data") or []
+        if not isinstance(rows, list):
+            rows = []
+        web = (self._client._web_app_base_url or "").rstrip("/")
+        results = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            venue_id = str(row.get("id") or "")
+            if not venue_id:
+                continue
+            detail_path = f"/venue-detail/{venue_id}"
+            rfp_path = f"/venue-booking-detail/{venue_id}"
+            extra = {
+                "guests": args.guests,
+                "date": args.event_date,
+                "event": args.event_type,
+                "kind": args.venue_kind,
+                "budget": int(args.budget) if args.budget else None,
+                "services": args.services,
+                "location": args.city,
+            }
+            query = urlencode(
+                {key: value for key, value in extra.items() if value not in (None, "", [])}
+            )
+            rfp_url = f"{web}{rfp_path}?{query}" if web and query else (
+                f"{web}{rfp_path}" if web else rfp_path
+            )
+            detail_url = f"{web}{detail_path}" if web else detail_path
+            kind_label = str(row.get("type") or row.get("category_name") or args.venue_kind or "").strip()
+            capacity = row.get("capacity")
+            price = row.get("price")
+            hint_bits = [
+                kind_label,
+                f"{capacity} guests" if capacity else "",
+                str(price) if price not in (None, "") else "",
+            ]
+            results.append(
+                {
+                    "id": venue_id,
+                    "name": row.get("name") or "Venue",
+                    "city": args.city,
+                    "venue_type": kind_label,
+                    "capacity": capacity,
+                    "price": price,
+                    "price_label": str(price) if price not in (None, "") else "",
+                    "hint": " · ".join(part for part in hint_bits if part),
+                    "booking_url": rfp_url,
+                    "detail_url": detail_url,
+                }
+            )
+        list_extra = {
+            "location": args.city,
+            "guests": args.guests,
+            "date": args.event_date,
+            "event": args.event_type,
+            "kind": args.venue_kind,
+            "budget": int(args.budget) if args.budget else None,
+            "services": args.services,
+        }
+        list_query = urlencode(
+            {key: value for key, value in list_extra.items() if value not in (None, "", [])}
+        )
+        list_url = f"{web}/venue-list?{list_query}" if web and list_query else (
+            f"{web}/venue-list" if web else "/venue-list"
+        )
+        rfp_list_url = f"{web}/venue-booking-confirm" if web else "/venue-booking-confirm"
+        return {
+            "results": results[:8],
+            "count": len(results[:8]),
+            "provider": "SUPER_TRAVEL",
+            "city": args.city,
+            "booking_url": list_url,
+            "rfp_url": rfp_list_url,
+        }
+
     async def _search_packages(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
@@ -1137,7 +1294,7 @@ class TravelToolExecutor:
                 session_id=session_id,
             )
             web = self._client._web_app_base_url
-            booking_url = f"{web}/preview/flights/review" if web else ""
+            booking_url = f"{web}/flight-details" if web else ""
             fare_types = priced.get("fare_types") or []
             first = fare_types[0] if fare_types and isinstance(fare_types[0], dict) else priced
             summary = first.get("fare_summary") if isinstance(first, dict) else {}
