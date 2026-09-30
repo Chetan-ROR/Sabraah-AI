@@ -54,6 +54,10 @@ class SearchEventsArgs(BaseModel):
     category_id: Optional[int] = None
 
 
+class GetVenueDetailsArgs(BaseModel):
+    venue_id: str = Field(min_length=1)
+
+
 class GetEventDetailsArgs(BaseModel):
     event_id: str = Field(min_length=1)
 
@@ -586,6 +590,22 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_venue_details",
+            "description": (
+                "Get one venue's about text, amenities, suitable events, pricing options, "
+                "property summary, cancellation policy, and similar properties. "
+                "Speak those details. Do not open a page or POST an RFP."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"venue_id": {"type": "string"}},
+                "required": ["venue_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_event_details",
             "description": (
                 "Get one event's tickets, schedule, and the booking_url. "
@@ -674,6 +694,7 @@ class TravelToolExecutor:
             "search_trains": self._search_trains,
             "search_events": self._search_events,
             "get_event_details": self._get_event_details,
+            "get_venue_details": self._get_venue_details,
             "search_flights": self._search_flights,
             "search_buses": self._search_buses,
             "search_hotels": self._search_hotels,
@@ -835,6 +856,23 @@ class TravelToolExecutor:
             user_access_token=self._user_access_token,
             session_id=session_id,
         )
+
+    async def _get_venue_details(
+        self, arguments: dict[str, Any], session_id: Optional[str]
+    ) -> dict[str, Any]:
+        args = GetVenueDetailsArgs.model_validate(arguments)
+        data = await self._client.request(
+            "GET",
+            f"/api/v1/users/venues/{args.venue_id}",
+            session_id=session_id,
+            user_access_token=self._user_access_token,
+        )
+        venue = data
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            venue = data["data"]
+        if not isinstance(venue, dict) or not (venue.get("id") or venue.get("name")):
+            return {"error": "not_found", "message": "I could not load that venue yet."}
+        return venue
 
     async def _search_local_transport(
         self, arguments: dict[str, Any], session_id: Optional[str]

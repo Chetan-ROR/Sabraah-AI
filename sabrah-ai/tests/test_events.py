@@ -697,6 +697,78 @@ def test_venue_flow_reads_list_when_asked() -> None:
     agent._tools.execute.assert_not_awaited()
 
 
+def test_venue_option_details_then_similar() -> None:
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.agents import ConversationAgent
+    from app.models import SessionState
+
+    assert ConversationAgent._wants_venue_details("Can you tell me the details of option 1?")
+    agent = ConversationAgent.__new__(ConversationAgent)
+    agent._tools = type(
+        "T",
+        (),
+        {
+            "execute": AsyncMock(
+                return_value={
+                    "id": 11,
+                    "name": "hmanshu 123 new",
+                    "category_name": "Banquet Hall",
+                    "address_summary": "Noida, Uttar Pradesh",
+                    "capacity": "500 Guests",
+                    "about": "A banquet hall for parties.",
+                    "amenities": [{"name": "WiFi"}, {"name": "amenities_test"}],
+                    "events": [{"name": "Party"}, {"name": "Wedding"}],
+                    "pricings": [
+                        {"pricing_type": "per_hour", "currency": "INR", "price": 10},
+                        {"pricing_type": "per_day", "currency": "INR", "price": 45},
+                    ],
+                    "property_summary": {
+                        "check_in": "2:00 PM onwards",
+                        "check_out": "12:00 PM",
+                        "pets": "Not Allowed",
+                        "smoking": "Designated Areas",
+                    },
+                    "cancellation_policies": [
+                        {
+                            "policy_type": "day",
+                            "duration_before": 2,
+                            "refund_percentage": 50,
+                            "description": "Partial refund",
+                        }
+                    ],
+                    "similar_properties": [
+                        {"id": 51, "name": "the weeding party", "address": "Noida, Uttar Pradesh"}
+                    ],
+                }
+            )
+        },
+    )()
+    session = SessionState(session_id="s1")
+    session.memory.user_goal = "book_venue"
+    session.memory.booking_mode = "venue"
+    session.memory.flow_step = "venue_pick"
+    session.last_offerings["venues"] = [
+        {"id": "11", "name": "hmanshu 123 new", "city": "Noida"},
+        {"id": "12", "name": "the weeding party", "city": "Noida"},
+    ]
+    spoken = asyncio.run(
+        agent._handle_venue_flow(session, "Can you tell me the details of option 1?", [])
+    )
+    lower = spoken.lower()
+    assert "hmanshu" in lower
+    assert "wifi" in lower
+    assert "per hour" in lower
+    assert "check-in" in lower
+    assert "cancellation" in lower
+    assert "similar properties" in lower
+    assert "opening the rfp" not in lower
+    assert session.memory.flow_step == "venue_details"
+    follow = asyncio.run(agent._handle_venue_flow(session, "Yes.", []))
+    assert "weeding" in follow.lower()
+
+
 def test_tell_me_the_list_at_start_includes_location() -> None:
     import asyncio
     from unittest.mock import AsyncMock

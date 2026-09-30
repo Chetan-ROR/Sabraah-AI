@@ -33,6 +33,7 @@ MEMORY_HINT_TOOLS = {
     "search_buses",
     "search_hotels",
     "search_venues",
+    "get_venue_details",
     "search_packages",
     "search_local_transport",
     "search_events",
@@ -1013,6 +1014,13 @@ class ConversationAgent:
                 session.last_offerings["packages"] = result["results"]
             elif tool_name == "search_events":
                 session.last_offerings["events"] = result["results"]
+        if tool_name == "get_venue_details" and isinstance(result, dict) and not result.get(
+            "error"
+        ):
+            session.last_offerings["venue_details"] = result
+            similar = result.get("similar_properties")
+            if isinstance(similar, list):
+                session.last_offerings["similar_venues"] = similar
         if tool_name == "get_event_details" and isinstance(result, dict) and not result.get(
             "error"
         ):
@@ -4761,6 +4769,228 @@ class ConversationAgent:
             "Say a venue name if you want its RFP page."
         )
 
+    @staticmethod
+    def _wants_venue_details(user_text: str) -> bool:
+        text = ConversationAgent._venue_plain_text(user_text)
+        if not text:
+            return False
+        if re.search(r"\b(tell me the list|list of venues|read out)\b", text):
+            return False
+        return bool(
+            re.search(
+                r"\b("
+                r"details?(?:\s+of)?|"
+                r"tell me (?:about|the details)|"
+                r"kya kya|"
+                r"pricing options?|"
+                r"property summary|"
+                r"cancellation|"
+                r"amenities|"
+                r"about (?:this |that |the )?venue"
+                r")\b",
+                text,
+            )
+        )
+
+    @staticmethod
+    def _wants_similar_venues(user_text: str) -> bool:
+        text = ConversationAgent._venue_plain_text(user_text)
+        return bool(
+            re.search(
+                r"\b(similar|other venues?|other properties|jaise|same (?:type|kind)|aur (?:venues?|properties))\b",
+                text,
+            )
+        )
+
+    @staticmethod
+    def _venue_label_list(items: Any) -> list[str]:
+        labels: list[str] = []
+        for item in items or []:
+            if isinstance(item, str) and item.strip():
+                labels.append(item.strip())
+            elif isinstance(item, dict):
+                name = item.get("name") or item.get("description") or item.get("label")
+                if name:
+                    labels.append(str(name).strip())
+        return [part for part in labels if part]
+
+    @staticmethod
+    def _speak_money(amount: Any, currency: str = "INR") -> Optional[str]:
+        if amount in (None, "", "N/A"):
+            return None
+        try:
+            value = float(str(amount).replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+        if value < 0:
+            return None
+        unit = "rupees" if str(currency or "INR").upper() in {"INR", "RS", "₹"} else str(currency)
+        if value == int(value):
+            return f"{int(value)} {unit}"
+        return f"{value} {unit}"
+
+    def _format_venue_detail_speech(self, venue: dict[str, Any]) -> str:
+        name = str(venue.get("name") or "This venue").strip()
+        city = str(venue.get("address_summary") or venue.get("city") or "").strip()
+        kind = str(venue.get("category_name") or venue.get("type") or "").strip()
+        capacity = str(venue.get("capacity") or "").strip()
+        parts = [name]
+        if city:
+            parts.append(f"in {city}")
+        if kind:
+            parts.append(kind)
+        if capacity and capacity.lower() != "n/a":
+            parts.append(f"capacity {capacity}")
+        about = str(venue.get("about") or "").strip()
+        if about:
+            clip = re.split(r"(?<=[.!?])\s+", about)
+            parts.append(" ".join(clip[:2]).strip())
+        amenities = self._venue_label_list(venue.get("amenities"))
+        if amenities:
+            parts.append("Amenities: " + ", ".join(amenities[:8]) + ".")
+        suitable = self._venue_label_list(venue.get("events"))
+        if suitable:
+            parts.append("Suitable for " + ", ".join(suitable[:8]) + ".")
+        pricing_labels = {
+            "per_hour": "per hour",
+            "per_day": "per day",
+            "per_event": "per event",
+            "per_plate": "per plate",
+        }
+        price_bits = []
+        for row in venue.get("pricings") or []:
+            if not isinstance(row, dict):
+                continue
+            money = self._speak_money(row.get("price"), str(row.get("currency") or "INR"))
+            if not money:
+                continue
+            label = pricing_labels.get(str(row.get("pricing_type") or ""), str(row.get("pricing_type") or "price"))
+            extra = []
+            weekend = self._speak_money(row.get("weekend_price"), str(row.get("currency") or "INR"))
+            holiday = self._speak_money(row.get("holiday_price"), str(row.get("currency") or "INR"))
+            if weekend:
+                extra.append(f"weekend {weekend}")
+            if holiday:
+                extra.append(f"holiday {holiday}")
+            bit = f"{label} {money}"
+            if extra:
+                bit = f"{bit}, {', '.join(extra)}"
+            price_bits.append(bit)
+        if price_bits:
+            parts.append("Pricing options: " + ". ".join(price_bits[:4]) + ".")
+        summary = venue.get("property_summary") if isinstance(venue.get("property_summary"), dict) else {}
+        summary_bits = []
+        if summary.get("check_in"):
+            summary_bits.append(f"check-in {summary.get('check_in')}")
+        if summary.get("check_out"):
+            summary_bits.append(f"check-out {summary.get('check_out')}")
+        if summary.get("pets"):
+            summary_bits.append(f"pets {summary.get('pets')}")
+        if summary.get("smoking"):
+            summary_bits.append(f"smoking {summary.get('smoking')}")
+        if summary_bits:
+            parts.append("Property summary: " + ", ".join(summary_bits) + ".")
+        cancel_bits = []
+        for policy in venue.get("cancellation_policies") or []:
+            if not isinstance(policy, dict):
+                continue
+            duration = policy.get("duration_before")
+            ptype = str(policy.get("policy_type") or "day").rstrip("s")
+            refund = policy.get("refund_percentage")
+            desc = str(policy.get("description") or "").strip()
+            chunk = []
+            if duration not in (None, ""):
+                unit = ptype + ("s" if str(duration) != "1" else "")
+                chunk.append(f"{duration} {unit} before the event")
+            if refund not in (None, ""):
+                chunk.append(f"{refund} percent refund")
+            if desc:
+                chunk.append(desc)
+            if chunk:
+                cancel_bits.append(", ".join(str(part) for part in chunk))
+        if cancel_bits:
+            parts.append("Cancellation policy: " + ". ".join(cancel_bits[:3]) + ".")
+        parts.append("Would you like to hear similar properties?")
+        return " ".join(str(part).strip() for part in parts if part)
+
+    def _speak_similar_venues(self, session: SessionState) -> str:
+        rows = [
+            item
+            for item in (session.last_offerings.get("similar_venues") or [])
+            if isinstance(item, dict)
+        ]
+        session.memory.flow_step = "venue_pick"
+        if not rows:
+            return "I do not have similar properties for this venue yet. Say a venue name if you want to send an RFP."
+        spoken_rows = []
+        for row in rows[:3]:
+            name = str(row.get("name") or "Venue").strip()
+            city = str(
+                row.get("address")
+                or row.get("address_summary")
+                or row.get("city")
+                or ""
+            ).strip()
+            label = name
+            if city and city.lower() not in name.lower():
+                label = f"{name}, in {city}"
+            spoken_rows.append(label)
+            if row.get("id") and not any(
+                str(item.get("id")) == str(row.get("id"))
+                for item in (session.last_offerings.get("venues") or [])
+                if isinstance(item, dict)
+            ):
+                (session.last_offerings.setdefault("venues", [])).append(row)
+        return (
+            "Similar properties: "
+            + ". Next. ".join(spoken_rows)
+            + ". Say a name for details, or to send an RFP."
+        )
+
+    async def _handle_venue_details_request(
+        self,
+        session: SessionState,
+        user_text: str,
+        venues: list[dict[str, Any]],
+        tools_used: list[str],
+    ) -> str:
+        matched = self._match_option(user_text, venues)
+        if matched is None:
+            named = next(
+                (
+                    row
+                    for row in venues
+                    if str(row.get("name") or "").lower() in (user_text or "").lower()
+                    and row.get("name")
+                ),
+                None,
+            )
+            matched = named
+        if matched is None and len(venues) == 1:
+            matched = venues[0]
+        if not isinstance(matched, dict) or not matched.get("id"):
+            return "Which option number should I describe? Say option 1, or the venue name."
+        venue_id = str(matched.get("id"))
+        session.memory.selected_venue_id = venue_id
+        result = await self._tools.execute(
+            "get_venue_details",
+            {"venue_id": venue_id},
+            session_id=session.session_id,
+            user_access_token=session.user_access_token,
+        )
+        tools_used.append("get_venue_details")
+        self._update_memory_from_tool(
+            session, "get_venue_details", {"venue_id": venue_id}, result
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return str(result.get("message") or "I could not load that venue yet.")
+        if not isinstance(result, dict):
+            return "I could not load that venue yet."
+        session.last_offerings.pop("venue_checkout", None)
+        session.memory.flow_step = "venue_details"
+        session.memory.selected_venue_id = None
+        return self._format_venue_detail_speech(result)
+
     def _venue_services_note(self, mem: Any) -> str:
         services = mem.venue_services or "none"
         if services == "food_decoration":
@@ -4842,6 +5072,21 @@ class ConversationAgent:
                 "The venue list is on your screen. I do not have the names loaded yet. "
                 "Say a venue name you see, and I will open its RFP."
             )
+        if mem.flow_step == "venue_details" and not self._wants_venue_details(user_text):
+            if self._wants_similar_venues(user_text) or self._user_said_yes(user_text):
+                return self._speak_similar_venues(session)
+            if self._user_said_no(user_text):
+                mem.flow_step = "venue_pick"
+                return "Okay. Say a venue name if you want to send an RFP."
+        if self._wants_venue_details(user_text):
+            if venues:
+                return await self._handle_venue_details_request(
+                    session, user_text, venues, tools_used
+                )
+            return (
+                "I do not have a venue list loaded yet. "
+                "Say tell me the list, then ask for option details."
+            )
         if mem.flow_step == "venue_open":
             mem.flow_step = "venue_pick" if venues else "venue_search"
             if mem.selected_venue_id:
@@ -4906,6 +5151,10 @@ class ConversationAgent:
                 )
                 matched = named
             if matched is not None:
+                if self._wants_venue_details(user_text):
+                    return await self._handle_venue_details_request(
+                        session, user_text, venues, tools_used
+                    )
                 mem.selected_venue_id = str(matched.get("id") or "")
                 mem.flow_step = "venue_open"
                 name = matched.get("name") or "that venue"
