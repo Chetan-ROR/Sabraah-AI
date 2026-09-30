@@ -310,6 +310,9 @@ def test_read_event_names_is_not_a_new_search() -> None:
     text = "Can you read the event's name, please?"
     assert ConversationAgent._wants_event_list_read(text)
     assert ConversationAgent._event_search_args(text) == {}
+    assert ConversationAgent._wants_venue_list_read("Can you read out, please?")
+    assert ConversationAgent._wants_venue_list_read("tumhare pass kya list of venues btao")
+    assert ConversationAgent._title_city("nodia") == "Noida"
 
 
 def test_one_guest_is_a_count() -> None:
@@ -317,6 +320,10 @@ def test_one_guest_is_a_count() -> None:
 
     assert ConversationAgent._parse_passenger_count("One guest.") == 1
     assert ConversationAgent._parse_event_guest_names("One guest.") == []
+    assert ConversationAgent._parse_passenger_count("Around 200.") == 200
+    assert ConversationAgent._parse_passenger_count("Two hundreds.") == 200
+    assert ConversationAgent._parse_passenger_count("Two hundred gates.") == 200
+    assert ConversationAgent._parse_passenger_count("two hundred guests") == 200
 
 
 def test_guest_details_are_not_treated_as_names() -> None:
@@ -615,6 +622,195 @@ def test_search_venues_builds_rfp_urls() -> None:
     assert "guests=200" in card["booking_url"]
     assert "/venue-list?" in result["booking_url"]
     assert "location=Jaipur" in result["booking_url"]
+    params = client.request.await_args.kwargs["params"]
+    assert params["search"] == "Jaipur"
+    assert "banquet" not in params["search"].lower()
+    assert "wedding" not in params["search"].lower()
+    assert "min_price" not in params
+    assert result.get("nearby") is False
+
+
+def test_search_venues_uses_catalog_when_city_search_empty() -> None:
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.services.travel_client import TravelBackendClient
+    from app.tools import TravelToolExecutor
+
+    client = TravelBackendClient(
+        "http://travel.test", "k", web_app_base_url="http://127.0.0.1:3000"
+    )
+
+    async def fake_request(method, path, **kwargs):
+        search = (kwargs.get("params") or {}).get("search")
+        if search:
+            return {"results": []}
+        return {
+            "results": [
+                {
+                    "id": 11,
+                    "name": "hmashu 123 new",
+                    "category_name": "Banquet Hall",
+                    "address_summary": "noida 125, Noida",
+                    "capacity": 500,
+                }
+            ]
+        }
+
+    client.request = AsyncMock(side_effect=fake_request)  # type: ignore[method-assign]
+    executor = TravelToolExecutor(client)
+    result = asyncio.run(
+        executor.execute("search_venues", {"city": "Noida", "venue_kind": "banquet"}, session_id="s1")
+    )
+    assert result["count"] == 1
+    assert "hmashu" in result["results"][0]["name"].lower()
+
+
+def test_venue_flow_reads_list_when_asked() -> None:
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.agents import ConversationAgent
+    from app.models import SessionState
+
+    agent = ConversationAgent.__new__(ConversationAgent)
+    agent._tools = type("T", (), {"execute": AsyncMock()})()
+    session = SessionState(session_id="s1")
+    session.memory.user_goal = "book_venue"
+    session.memory.booking_mode = "venue"
+    session.memory.venue_event_type = "wedding"
+    session.memory.passenger_count = 200
+    session.memory.destination = "Noida"
+    session.memory.date_flexible = True
+    session.memory.venue_kind = "banquet"
+    session.memory.venue_services = "food"
+    session.memory.budget = 0
+    session.memory.flow_step = "venue_open"
+    session.last_offerings["venues"] = [
+        {"id": "11", "name": "hmashu 123 new", "hint": "Noida", "city": "Noida"},
+        {"id": "12", "name": "the weeding party", "hint": "Noida", "city": "Noida"},
+    ]
+    spoken = asyncio.run(agent._handle_venue_flow(session, "Can you read out, please?", []))
+    assert "hmashu" in spoken.lower()
+    assert "weeding" in spoken.lower()
+    assert "noida" in spoken.lower()
+    agent._tools.execute.assert_not_awaited()
+
+
+def test_tell_me_the_list_at_start_includes_location() -> None:
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.agents import ConversationAgent
+    from app.models import SessionState
+
+    assert ConversationAgent._wants_venue_list_read("Can you tell me the list?")
+    agent = ConversationAgent.__new__(ConversationAgent)
+    agent._tools = type(
+        "T",
+        (),
+        {
+            "execute": AsyncMock(
+                return_value={
+                    "results": [
+                        {
+                            "id": "11",
+                            "name": "hmashu 123 new",
+                            "city": "Noida",
+                        }
+                    ]
+                }
+            )
+        },
+    )()
+    agent._update_memory_from_tool = lambda *args, **kwargs: None
+    session = SessionState(session_id="s1")
+    spoken = asyncio.run(
+        agent._handle_venue_flow(session, "Can you tell me the list?", [])
+    )
+    assert "hmashu" in spoken.lower()
+    assert "noida" in spoken.lower()
+    assert session.memory.flow_step == "venue_pick"
+    assert session.last_offerings.get("venue_checkout") in (None, {})
+
+
+def test_search_venues_falls_back_nearby() -> None:
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.services.travel_client import TravelBackendClient
+    from app.tools import TravelToolExecutor
+
+    client = TravelBackendClient(
+        "http://travel.test", "k", web_app_base_url="http://127.0.0.1:3000"
+    )
+    client.request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            {"results": []},
+            {
+                "results": [
+                    {
+                        "id": 9,
+                        "name": "Ajmer Lawn",
+                        "type": "banquet",
+                        "address": "Civil Lines, Ajmer",
+                        "capacity": 250,
+                    }
+                ]
+            },
+        ]
+    )
+    executor = TravelToolExecutor(client)
+    result = asyncio.run(
+        executor.execute(
+            "search_venues",
+            {"city": "Jaipur", "event_type": "wedding", "venue_kind": "banquet"},
+            session_id="s1",
+        )
+    )
+    assert result["nearby"] is True
+    assert result["count"] == 1
+    assert result["results"][0]["city"] == "Ajmer"
+    assert client.request.await_count >= 2
+
+
+def test_venue_short_answers_food_and_skip() -> None:
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.agents import ConversationAgent
+    from app.models import SessionState
+
+    agent = ConversationAgent.__new__(ConversationAgent)
+    agent._tools = type(
+        "T",
+        (),
+        {"execute": AsyncMock(return_value={"results": [], "booking_url": "/venue-list"})},
+    )()
+    session = SessionState(session_id="s1")
+    ConversationAgent._maybe_set_booking_mode(session, "I want to book an event venue")
+    asyncio.run(agent._handle_venue_flow(session, "I want to book an event venue", []))
+    asyncio.run(agent._handle_venue_flow(session, "Wedding", []))
+    asyncio.run(agent._handle_venue_flow(session, "Around 200.", []))
+    asyncio.run(agent._handle_venue_flow(session, "Jaipur", []))
+    asyncio.run(agent._handle_venue_flow(session, "Skip.", []))
+    sixth = asyncio.run(agent._handle_venue_flow(session, "Banquet.", []))
+    assert "food" in sixth.lower()
+    seventh = asyncio.run(agent._handle_venue_flow(session, "Food.", []))
+    assert "budget" in seventh.lower()
+    assert session.memory.venue_services == "food"
+    assert session.memory.passenger_count == 200
+    eighth = asyncio.run(agent._handle_venue_flow(session, "Skip.", []))
+    assert session.memory.budget == 0
+    agent._tools.execute.assert_awaited()
+
+
+def test_parse_venue_services_food_period() -> None:
+    from app.agents import ConversationAgent
+
+    assert ConversationAgent._parse_venue_services("Food.") == "food"
+    assert ConversationAgent._parse_venue_services("Yes.") is None
+    assert ConversationAgent._parse_venue_kind("Banquet.") == "banquet"
 
 
 def test_venue_flow_asks_in_order_then_searches() -> None:
@@ -635,6 +831,7 @@ def test_venue_flow_asks_in_order_then_searches() -> None:
                         {
                             "id": "21",
                             "name": "Royal Banquet Jaipur",
+                            "city": "Jaipur",
                             "hint": "banquet",
                             "booking_url": "http://127.0.0.1:3000/venue-booking-detail/21",
                         }
@@ -651,8 +848,9 @@ def test_venue_flow_asks_in_order_then_searches() -> None:
     assert "event" in first.lower()
     second = asyncio.run(agent._handle_venue_flow(session, "Wedding", []))
     assert "guest" in second.lower()
-    third = asyncio.run(agent._handle_venue_flow(session, "200 guests", []))
+    third = asyncio.run(agent._handle_venue_flow(session, "Around 200.", []))
     assert "city" in third.lower() or "location" in third.lower()
+    assert session.memory.passenger_count == 200
     fourth = asyncio.run(agent._handle_venue_flow(session, "Jaipur", []))
     assert "date" in fourth.lower()
     fifth = asyncio.run(agent._handle_venue_flow(session, "skip", []))
@@ -668,8 +866,10 @@ def test_venue_flow_asks_in_order_then_searches() -> None:
     assert session.memory.venue_kind == "banquet"
     assert session.memory.venue_services == "food_decoration"
     assert session.memory.budget == 500000
-    assert session.memory.flow_step == "venue_open"
+    assert session.memory.flow_step == "venue_pick"
     assert "royal banquet" in eighth.lower()
+    assert "jaipur" in eighth.lower()
+    assert "opening the venue list" not in eighth.lower()
     agent._tools.execute.assert_awaited()
 
 

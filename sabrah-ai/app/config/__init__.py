@@ -1,4 +1,4 @@
-"""Sabrah AI configuration."""
+"""Sabraah AI configuration."""
 
 from app.config.settings import Settings, get_settings
 

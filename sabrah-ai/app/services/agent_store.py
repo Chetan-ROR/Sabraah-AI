@@ -19,17 +19,17 @@ _AGENTS_FILE = _DATA_DIR / "agents.json"
 def _default_system_prompt() -> str:
     if _DEFAULT_PROMPT_PATH.exists():
         return _DEFAULT_PROMPT_PATH.read_text(encoding="utf-8").strip()
-    return "You are Sabrah, a friendly AI travel assistant. Reply in English only."
+    return "You are Sabraah, a friendly AI travel assistant. Reply in English only."
 
 
 def _seed_agents() -> list[AgentRecord]:
     now = datetime.utcnow()
     sabrah = AgentRecord(
         id="agent-sabrah",
-        name="Sabrah",
+        name="Sabraah",
         description="SABRAAH's journey companion — trips, stays, events, and celebrations.",
         first_message=(
-            "Hi, I'm Sabrah. Let's plan something you'll remember — "
+            "Hi, I'm Sabraah. Let's plan something you'll remember — "
             "a getaway, a stay, or a celebration. What's on your mind?"
         ),
         system_prompt=_default_system_prompt(),
@@ -41,9 +41,9 @@ def _seed_agents() -> list[AgentRecord]:
         id="agent-inbound",
         name="Inbound Receptionist Agent",
         description="Handles inbound travel inquiries and routes to booking flow.",
-        first_message="Thank you for calling Sabrah. How can I help with your travel plans today?",
+        first_message="Thank you for calling Sabraah. How can I help with your travel plans today?",
         system_prompt=(
-            "Persona: You are Sabrah's inbound receptionist for travel bookings.\n"
+            "Persona: You are Sabraah's inbound receptionist for travel bookings.\n"
             "Tone: professional, warm, concise (1–2 short sentences for voice).\n\n"
             "GOALS:\n"
             "1. Identify caller intent: book, cancel, or refund.\n"
@@ -63,7 +63,7 @@ def _seed_agents() -> list[AgentRecord]:
         description="Upsells packages and group / charter bookings.",
         first_message="Looking for a group trip or full-coach charter? I can help.",
         system_prompt=(
-            "Persona: You are Sabrah Sales, focused on group travel and packages.\n"
+            "Persona: You are Sabraah Sales, focused on group travel and packages.\n"
             "GOALS: Qualify group size, trip purpose, and dates; offer charter when >9 passengers.\n"
             "CONSTRAINTS: English only; never invent fares; use tools for search/booking."
         ),

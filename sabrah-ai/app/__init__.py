@@ -1,1 +1,1 @@
-"""Sabrah AI application package."""
+"""Sabraah AI application package."""

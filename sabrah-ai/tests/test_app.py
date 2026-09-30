@@ -1,4 +1,4 @@
-"""Sabrah AI pytest suite with mocked OpenAI / ElevenLabs / Travel Backend."""
+"""Sabraah AI pytest suite with mocked OpenAI / ElevenLabs / Travel Backend."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ class FakeLLM:
 
 
 class FakeSTT:
-    def __init__(self, text: str = "Hi Sabrah") -> None:
+    def __init__(self, text: str = "Hi Sabraah") -> None:
         self.text = text
 
     async def transcribe(self, audio_bytes: bytes, filename: str = "audio.webm") -> str:
@@ -426,11 +426,11 @@ def test_text_chat_basic(client) -> None:
     session = test_client.post("/api/v1/sessions").json()["session_id"]
     response = test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi Sabrah"},
+        json={"session_id": session, "message": "Hi Sabraah"},
     )
     assert response.status_code == 200
     data = response.json()
-    assert "sabrah" in data["assistant_text"].lower()
+    assert "sabraah" in data["assistant_text"].lower()
     assert "on your mind" in data["assistant_text"].lower()
     assert data["audio_base64"] == base64.b64encode(b"FAKEMP3").decode("ascii")
     assert stack["tts"].texts
@@ -441,7 +441,7 @@ def test_general_chat_reaches_llm(client) -> None:
     session = test_client.post("/api/v1/sessions").json()["session_id"]
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi Sabrah"},
+        json={"session_id": session, "message": "Hi Sabraah"},
     )
     stack["llm"].enqueue(
         SimpleNamespace(
@@ -489,7 +489,7 @@ def test_elevenlabs_failure_still_returns_text(client) -> None:
 def _book_train_until_search(test_client, session: str, route: str = "Delhi to Mumbai"):
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi Sabrah"},
+        json={"session_id": session, "message": "Hi Sabraah"},
     )
     test_client.post(
         "/api/v1/chat/text",
@@ -704,7 +704,7 @@ def test_voice_wake_phrase_greets(client) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data.get("ignored") is not True
-    assert "sabrah" in data["assistant_text"].lower()
+    assert "sabraah" in data["assistant_text"].lower()
     assert "on your mind" in data["assistant_text"].lower()
 
 
@@ -713,9 +713,9 @@ def test_guided_flight_search_not_trains(client) -> None:
     session = test_client.post("/api/v1/sessions").json()["session_id"]
     greet = test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi Sabrah"},
+        json={"session_id": session, "message": "Hi Sabraah"},
     )
-    assert "sabrah" in greet.json()["assistant_text"].lower()
+    assert "sabraah" in greet.json()["assistant_text"].lower()
     assert "on your mind" in greet.json()["assistant_text"].lower()
     where = test_client.post(
         "/api/v1/chat/text",
@@ -768,7 +768,7 @@ def test_book_a_train_uses_guided_flow(client) -> None:
     session = test_client.post("/api/v1/sessions").json()["session_id"]
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi Sabrah"},
+        json={"session_id": session, "message": "Hi Sabraah"},
     )
     reply = test_client.post(
         "/api/v1/chat/text",
@@ -811,7 +811,7 @@ def test_guided_flight_asks_fare_and_extras(client) -> None:
     session = test_client.post("/api/v1/sessions").json()["session_id"]
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi Sabrah"},
+        json={"session_id": session, "message": "Hi Sabraah"},
     )
     test_client.post(
         "/api/v1/chat/text",
@@ -914,7 +914,7 @@ def test_frontend_loads(client) -> None:
     test_client, _ = client
     response = test_client.get("/")
     assert response.status_code == 200
-    assert "Sabrah" in response.text
+    assert "Sabraah" in response.text
 
 
 def test_session_store_unit() -> None:
@@ -940,7 +940,7 @@ def test_session_store_unit() -> None:
 def _book_flight_until_options(test_client, session: str):
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi Sabrah"},
+        json={"session_id": session, "message": "Hi Sabraah"},
     )
     test_client.post(
         "/api/v1/chat/text",
@@ -1017,7 +1017,7 @@ def test_gopal_station_asks_clarification(client) -> None:
     session = test_client.post("/api/v1/sessions").json()["session_id"]
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi Sabrah"},
+        json={"session_id": session, "message": "Hi Sabraah"},
     )
     test_client.post(
         "/api/v1/chat/text",
@@ -1050,7 +1050,7 @@ def test_train_search_hides_generic_server_error(client) -> None:
     session = test_client.post("/api/v1/sessions").json()["session_id"]
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi Sabrah"},
+        json={"session_id": session, "message": "Hi Sabraah"},
     )
     test_client.post(
         "/api/v1/chat/text",
@@ -1132,7 +1132,7 @@ def test_oneshot_train_uses_stated_name_and_for_me(client) -> None:
     session = test_client.post("/api/v1/sessions").json()["session_id"]
     test_client.post(
         "/api/v1/chat/text",
-        json={"session_id": session, "message": "Hi Sabrah"},
+        json={"session_id": session, "message": "Hi Sabraah"},
     )
     reply = test_client.post(
         "/api/v1/chat/text",

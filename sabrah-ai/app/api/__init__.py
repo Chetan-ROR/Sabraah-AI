@@ -1,4 +1,4 @@
-"""API routes for Sabrah AI."""
+"""API routes for Sabraah AI."""
 
 from __future__ import annotations
 

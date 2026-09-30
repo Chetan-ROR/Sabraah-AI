@@ -1,4 +1,4 @@
-"""Pytest configuration for Sabrah AI."""
+"""Pytest configuration for Sabraah AI."""
 
 import os
 

@@ -165,6 +165,8 @@ def _city_matches(item: dict[str, Any], city: Optional[str]) -> bool:
 
 _NEARBY_CITIES = {
     "jaipur": ["ajmer", "alwar", "jodhpur", "udaipur", "delhi", "agra", "kota"],
+    "noida": ["delhi", "gurgaon", "gurugram", "ghaziabad", "faridabad", "greater noida"],
+    "nodia": ["delhi", "gurgaon", "gurugram", "ghaziabad", "faridabad", "greater noida"],
     "delhi": ["noida", "gurgaon", "gurugram", "ghaziabad", "faridabad", "jaipur"],
     "new delhi": ["noida", "gurgaon", "gurugram", "ghaziabad", "faridabad", "jaipur"],
     "mumbai": ["thane", "navi mumbai", "pune", "nashik"],

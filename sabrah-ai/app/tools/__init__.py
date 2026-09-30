@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
 from typing import Any, Awaitable, Callable, Dict, Optional, Union
 from urllib.parse import urlencode
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.services.events_client import SuperTravelEventsClient
+from app.services.events_client import SuperTravelEventsClient, _nearby_cities_for
 from app.services.travel_client import CABIN_MAP, TravelBackendClient, TravelBackendError, friendly_travel_error
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ class SearchLocalTransportArgs(BaseModel):
 
 
 class SearchVenuesArgs(BaseModel):
-    city: str
+    city: Optional[str] = None
     event_type: Optional[str] = None
     venue_kind: Optional[str] = None
     guests: Optional[int] = None
@@ -1124,23 +1125,12 @@ class TravelToolExecutor:
             "check_out": args.check_out,
         }
 
-    async def _search_venues(
-        self, arguments: dict[str, Any], session_id: Optional[str]
-    ) -> dict[str, Any]:
-        args = SearchVenuesArgs.model_validate(arguments)
-        search_bits = [args.city]
-        if args.venue_kind:
-            search_bits.append(args.venue_kind.replace("_", " "))
-        if args.event_type:
-            search_bits.append(args.event_type.replace("_", " "))
-        params: dict[str, Any] = {
-            "search": " ".join(part for part in search_bits if part).strip(),
-            "page": 1,
-            "page_size": 8,
-        }
-        if args.budget and args.budget > 0:
-            params["min_price"] = 0
-            params["max_price"] = int(args.budget)
+    async def _fetch_venue_rows(
+        self, city: str, session_id: Optional[str]
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"page": 1, "page_size": 24}
+        if city and city.strip():
+            params["search"] = city.strip()
         data = await self._client.request(
             "GET",
             "/api/v1/users/venues",
@@ -1148,17 +1138,170 @@ class TravelToolExecutor:
             session_id=session_id,
             user_access_token=self._user_access_token,
         )
-        rows = data.get("results") or data.get("data") or []
+        return self._unwrap_venue_rows(data)
+
+    @staticmethod
+    def _unwrap_venue_rows(data: Any) -> list[dict[str, Any]]:
+        rows: Any = data
+        if isinstance(data, dict):
+            rows = data.get("results") or data.get("data") or data.get("venues") or []
+            if isinstance(rows, dict):
+                rows = rows.get("results") or rows.get("data") or []
         if not isinstance(rows, list):
-            rows = []
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
+    @staticmethod
+    def _venue_row_hay(row: dict[str, Any]) -> str:
+        bits = [
+            str(row.get(key) or "")
+            for key in (
+                "name",
+                "address",
+                "address_summary",
+                "address_full",
+                "city",
+                "location",
+                "city_name",
+                "type",
+                "category_name",
+            )
+        ]
+        locations = row.get("locations")
+        if isinstance(locations, dict):
+            bits.append(str(locations.get("name") or ""))
+            bits.append(str(locations.get("address") or ""))
+            nested = locations.get("city")
+            if isinstance(nested, dict):
+                bits.append(str(nested.get("name") or ""))
+            elif nested:
+                bits.append(str(nested))
+        elif isinstance(locations, list):
+            for loc in locations:
+                if not isinstance(loc, dict):
+                    continue
+                bits.append(str(loc.get("address") or ""))
+                nested = loc.get("city")
+                if isinstance(nested, dict):
+                    bits.append(str(nested.get("name") or ""))
+                elif nested:
+                    bits.append(str(nested))
+        return " ".join(bits)
+
+    @staticmethod
+    def _venue_row_city(row: dict[str, Any], fallback: str = "") -> str:
+        for key in ("city", "location", "city_name"):
+            val = row.get(key)
+            if isinstance(val, dict) and val.get("name"):
+                return str(val["name"]).strip()
+            if isinstance(val, str) and val.strip() and val.strip().lower() not in {"india"}:
+                return val.strip()
+        hay = TravelToolExecutor._venue_row_hay(row)
+        addr = str(row.get("address_summary") or row.get("address") or row.get("venue_address") or "")
+        if "," in addr:
+            tail = addr.split(",")[-1].strip()
+            if tail:
+                return tail
+        if hay.strip():
+            return fallback
+        return fallback
+
+    @staticmethod
+    def _venue_matches_city(row: dict[str, Any], city: Optional[str]) -> bool:
+        if not city or not str(city).strip():
+            return True
+        needle = str(city).strip().lower()
+        aliases = {
+            "noida": ("noida", "nodia", "greater noida"),
+            "nodia": ("noida", "nodia", "greater noida"),
+            "gurugram": ("gurugram", "gurgaon"),
+            "gurgaon": ("gurugram", "gurgaon"),
+            "bengaluru": ("bengaluru", "bangalore"),
+            "bangalore": ("bengaluru", "bangalore"),
+        }
+        hay = TravelToolExecutor._venue_row_hay(row).lower()
+        return any(token in hay for token in (aliases.get(needle) or (needle,)))
+
+    @staticmethod
+    def _venue_matches_kind(row: dict[str, Any], kind: Optional[str]) -> bool:
+        if not kind or kind == "any":
+            return True
+        hay = " ".join(
+            str(row.get(key) or "")
+            for key in ("type", "category_name", "name", "venue_type")
+        ).lower()
+        if kind == "banquet":
+            return bool(re.search(r"banquet|lawn|farmhouse|hall|marriage", hay))
+        if kind == "hotel":
+            return "hotel" in hay
+        if kind == "government":
+            return bool(re.search(r"government|govt|sarkari", hay))
+        return True
+
+    @staticmethod
+    def _venue_fits_guests(row: dict[str, Any], guests: Optional[int]) -> bool:
+        if not guests:
+            return True
+        cap = row.get("capacity") or row.get("max_capacity") or row.get("guest_capacity")
+        try:
+            cap_n = int(float(str(cap).replace(",", "")))
+        except (TypeError, ValueError):
+            return True
+        return cap_n >= int(guests)
+
+    def _filter_venue_rows(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        kind: Optional[str],
+        guests: Optional[int],
+    ) -> list[dict[str, Any]]:
+        kinded = [row for row in rows if self._venue_matches_kind(row, kind)]
+        use = kinded or rows
+        fitted = [row for row in use if self._venue_fits_guests(row, guests)]
+        return fitted or use
+
+    async def _search_venues(
+        self, arguments: dict[str, Any], session_id: Optional[str]
+    ) -> dict[str, Any]:
+        args = SearchVenuesArgs.model_validate(arguments)
+        requested_city = (args.city or "").strip()
+        nearby = False
+        on_screen = False
+        used_city = requested_city
+        rows = (
+            await self._fetch_venue_rows(requested_city, session_id)
+            if requested_city
+            else []
+        )
+        if requested_city and rows:
+            city_hit = [row for row in rows if self._venue_matches_city(row, requested_city)]
+            rows = city_hit or rows
+        if not rows:
+            for nearby_city in _nearby_cities_for(requested_city):
+                rows = await self._fetch_venue_rows(nearby_city, session_id)
+                if rows:
+                    nearby = True
+                    used_city = nearby_city
+                    break
+        if not rows:
+            catalog = await self._fetch_venue_rows("", session_id)
+            city_hit = [
+                row for row in catalog if self._venue_matches_city(row, requested_city)
+            ]
+            if city_hit:
+                rows = city_hit
+            elif catalog:
+                rows = catalog
+                on_screen = True
+        rows = self._filter_venue_rows(rows, kind=args.venue_kind, guests=args.guests)
         web = (self._client._web_app_base_url or "").rstrip("/")
         results = []
         for row in rows:
-            if not isinstance(row, dict):
-                continue
             venue_id = str(row.get("id") or "")
             if not venue_id:
                 continue
+            card_city = self._venue_row_city(row, used_city)
             detail_path = f"/venue-detail/{venue_id}"
             rfp_path = f"/venue-booking-detail/{venue_id}"
             extra = {
@@ -1168,7 +1311,7 @@ class TravelToolExecutor:
                 "kind": args.venue_kind,
                 "budget": int(args.budget) if args.budget else None,
                 "services": args.services,
-                "location": args.city,
+                "location": card_city or args.city,
             }
             query = urlencode(
                 {key: value for key, value in extra.items() if value not in (None, "", [])}
@@ -1181,6 +1324,7 @@ class TravelToolExecutor:
             capacity = row.get("capacity")
             price = row.get("price")
             hint_bits = [
+                card_city,
                 kind_label,
                 f"{capacity} guests" if capacity else "",
                 str(price) if price not in (None, "") else "",
@@ -1189,7 +1333,7 @@ class TravelToolExecutor:
                 {
                     "id": venue_id,
                     "name": row.get("name") or "Venue",
-                    "city": args.city,
+                    "city": card_city,
                     "venue_type": kind_label,
                     "capacity": capacity,
                     "price": price,
@@ -1200,7 +1344,7 @@ class TravelToolExecutor:
                 }
             )
         list_extra = {
-            "location": args.city,
+            "location": used_city,
             "guests": args.guests,
             "date": args.event_date,
             "event": args.event_type,
@@ -1219,7 +1363,10 @@ class TravelToolExecutor:
             "results": results[:8],
             "count": len(results[:8]),
             "provider": "SUPER_TRAVEL",
-            "city": args.city,
+            "city": used_city,
+            "requested_city": requested_city,
+            "nearby": nearby,
+            "on_screen": on_screen,
             "booking_url": list_url,
             "rfp_url": rfp_list_url,
         }

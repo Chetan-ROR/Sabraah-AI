@@ -13,7 +13,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = Field(default="Sabrah AI", alias="APP_NAME")
+    app_name: str = Field(default="Sabraah AI", alias="APP_NAME")
     app_env: str = Field(default="development", alias="APP_ENV")
     host: str = Field(default="127.0.0.1", alias="HOST")
     port: int = Field(default=8000, alias="PORT")

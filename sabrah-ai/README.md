@@ -1,4 +1,4 @@
-# Sabrah AI
+# Sabraah AI
 
 Voice-based AI travel assistant frontend + backend.
 
@@ -60,7 +60,7 @@ Search/list APIs on api-repository are anonymous. Login JWT is only needed for i
 1. Create an API key in the ElevenLabs dashboard
 2. Open Voice Library → select a voice → copy Voice ID
 3. Prefer `eleven_multilingual_v2` for English / Hindi / Hinglish
-4. If TTS fails, Sabrah still returns the text reply when possible
+4. If TTS fails, Sabraah still returns the text reply when possible
 
 ## Run
 
@@ -85,7 +85,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/sessions
 # then
 curl -X POST http://127.0.0.1:8000/api/v1/chat/text \
   -H 'Content-Type: application/json' \
-  -d '{"session_id":"<id>","message":"Hi Sabrah"}'
+  -d '{"session_id":"<id>","message":"Hi Sabraah"}'
 ```
 
 ## Microphone testing
@@ -93,7 +93,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat/text \
 1. Allow microphone permission when the browser asks
 2. Click **Start Talking**
 3. Speak, then click **Stop** (or wait for auto-stop)
-4. Sabrah transcribes, thinks, speaks the reply
+4. Sabraah transcribes, thinks, speaks the reply
 
 If permission is denied, the UI shows a clear error.
 

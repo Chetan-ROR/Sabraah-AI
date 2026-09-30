@@ -59,7 +59,7 @@
   }
 
   function idleLabel() {
-    return wakeEnabled ? "Say Hey Sabrah" : "Ready";
+    return wakeEnabled ? "Say Hey Sabraah" : "Ready";
   }
 
   function idleMode() {
@@ -86,7 +86,7 @@
     bubble.className = `bubble ${role}`;
     const who = document.createElement("span");
     who.className = "who";
-    who.textContent = role === "user" ? "You" : "Sabrah";
+    who.textContent = role === "user" ? "You" : "Sabraah";
     const body = document.createElement("div");
     body.textContent = text;
     bubble.appendChild(who);
@@ -737,7 +737,7 @@
         wakeHint.hidden = true;
         stopWakeListening({ keepEnabled: false });
         showError(
-          "Microphone permission needed for Hey Sabrah. Allow mic access, then turn Always listen back on."
+          "Microphone permission needed for Hey Sabraah. Allow mic access, then turn Always listen back on."
         );
         restoreIdle();
       }
@@ -770,7 +770,7 @@
     playWakeChime();
     // Greeting turn (no long empty recording).
     autoListenAfterReply = true;
-    await sendText("Hey Sabrah");
+    await sendText("Hey Sabraah");
   }
 
   async function playAudioBase64(b64, mime = "audio/mpeg") {
@@ -789,7 +789,7 @@
         resolve();
       };
       audio.onerror = () => {
-        showError("Could not play Sabrah's voice response.");
+        showError("Could not play Sabraah's voice response.");
         restoreIdle();
         resolve();
       };
@@ -824,7 +824,7 @@
       }
     } catch {
       setConnection(false);
-      showError("Cannot reach Sabrah AI server.");
+      showError("Cannot reach Sabraah AI server.");
     }
   }
 
@@ -1107,7 +1107,7 @@
       wakeEnabled = false;
       wakeHint.hidden = true;
       showError(
-        "Hey Sabrah needs Chrome or Edge (Web Speech API). Use Start Talking instead."
+        "Hey Sabraah needs Chrome or Edge (Web Speech API). Use Start Talking instead."
       );
       return;
     }

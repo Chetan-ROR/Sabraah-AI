@@ -174,7 +174,7 @@
         <p class="muted">Voice uses the shared ElevenLabs voice from <code>sabrah-ai/.env</code> for all agents in this MVP.</p>
       </div>
       <div class="prompt-box" data-pane="tools" hidden>
-        <p class="muted">Tools are the existing Sabrah travel tools (search, book, cancel, refund). Per-agent tool toggles can come later.</p>
+        <p class="muted">Tools are the existing Sabraah travel tools (search, book, cancel, refund). Per-agent tool toggles can come later.</p>
       </div>
       <div class="prompt-box" data-pane="advanced" hidden>
         <p class="muted">Agent id: <code>${escapeHtml(agent.id)}</code></p>
@@ -468,7 +468,7 @@
         first_message: fd.get("first_message") || "",
         system_prompt:
           fd.get("system_prompt") ||
-          "You are a helpful Sabrah travel assistant. Reply in English only.",
+          "You are a helpful Sabraah travel assistant. Reply in English only.",
         enabled: true,
       };
       try {

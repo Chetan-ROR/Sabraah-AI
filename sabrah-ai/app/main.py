@@ -1,4 +1,4 @@
-"""Sabrah AI FastAPI entrypoint."""
+"""Sabraah AI FastAPI entrypoint."""
 
 from __future__ import annotations
 
