@@ -45,6 +45,8 @@ class SearchVenuesArgs(BaseModel):
     event_date: Optional[str] = None
     budget: Optional[float] = None
     services: Optional[str] = None
+    pricing_type: Optional[str] = None
+    preferred_time: Optional[str] = None
 
 
 class SearchEventsArgs(BaseModel):
@@ -1111,19 +1113,31 @@ class TravelToolExecutor:
     ) -> dict[str, Any]:
         return await self._unsupported_on_api_repository("Bus search")
 
+    @staticmethod
+    def _hotel_search_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = data.get("results") or data.get("hotels") or []
+        inner = data.get("data")
+        if isinstance(inner, list):
+            rows = inner
+        elif isinstance(inner, dict) and isinstance(inner.get("data"), list):
+            rows = inner["data"]
+        return [row for row in rows if isinstance(row, dict)]
+
     async def _search_hotels(
         self, arguments: dict[str, Any], session_id: Optional[str]
     ) -> dict[str, Any]:
         args = SearchHotelsArgs.model_validate(arguments)
+        rooms = max(1, args.rooms)
         adults = max(1, args.guests)
+        per_room_adults = max(1, (adults + rooms - 1) // rooms)
         occupancy = [
             {
                 "room_no": index + 1,
-                "adult": max(1, adults if args.rooms == 1 else 1),
+                "adult": per_room_adults,
                 "child": 0,
                 "child_age": [],
             }
-            for index in range(max(1, args.rooms))
+            for index in range(rooms)
         ]
         data = await self._client.request(
             "POST",
@@ -1136,31 +1150,95 @@ class TravelToolExecutor:
                 "occupancy": occupancy,
             },
             session_id=session_id,
+            user_access_token=self._user_access_token,
         )
-        rows = data.get("results") or data.get("hotels") or []
-        if isinstance(data.get("data"), list):
-            rows = data["data"]
+        rows = self._hotel_search_rows(data)
+        web = (self._client._web_app_base_url or "").rstrip("/")
+        list_query = urlencode(
+            {
+                key: value
+                for key, value in {
+                    "city": args.city,
+                    "checkIn": args.check_in,
+                    "checkOut": args.check_out,
+                    "adults": adults,
+                    "rooms": rooms,
+                }.items()
+                if value not in (None, "", [])
+            }
+        )
+        list_url = f"{web}/hotel-list?{list_query}" if web and list_query else (
+            f"{web}/hotel-list" if web else "/hotel-list"
+        )
         results = []
         for row in rows:
-            if not isinstance(row, dict):
+            hotel_id = str(row.get("id") or row.get("hotel_id") or "")
+            if not hotel_id:
                 continue
-            results.append(
+            address = row.get("address") if isinstance(row.get("address"), dict) else {}
+            card_city = str(address.get("city") or args.city or "").strip()
+            price = row.get("price") or row.get("total_price") or row.get("price_per_night")
+            currency = row.get("currency") or "INR"
+            rating = row.get("rating")
+            facilities = row.get("facilities")
+            facility_hint = ""
+            if isinstance(facilities, list):
+                facility_hint = ", ".join(
+                    str(item.get("name") if isinstance(item, dict) else item)
+                    for item in facilities[:3]
+                    if item
+                )
+            hint_bits = [
+                card_city,
+                f"{rating}★" if rating not in (None, "") else "",
+                f"INR {int(price)}" if isinstance(price, (int, float)) else str(price or ""),
+                facility_hint,
+            ]
+            detail_path = f"/hotel-detail/{hotel_id}"
+            detail_query = urlencode(
                 {
-                    "id": str(row.get("id") or row.get("hotel_id") or ""),
-                    "name": row.get("name") or "Hotel",
-                    "city": args.city,
-                    "rating": row.get("rating"),
-                    "price": row.get("price") or row.get("total_price") or row.get("price_per_night"),
-                    "currency": row.get("currency") or "INR",
+                    key: value
+                    for key, value in {
+                        "city": args.city,
+                        "checkIn": args.check_in,
+                        "checkOut": args.check_out,
+                        "adults": adults,
+                        "rooms": rooms,
+                    }.items()
+                    if value not in (None, "", [])
                 }
             )
+            detail_url = (
+                f"{web}{detail_path}?{detail_query}"
+                if web and detail_query
+                else (f"{web}{detail_path}" if web else detail_path)
+            )
+            results.append(
+                {
+                    "id": hotel_id,
+                    "name": row.get("name") or "Hotel",
+                    "city": card_city or args.city,
+                    "rating": rating,
+                    "price": price,
+                    "price_label": (
+                        f"INR {int(price)}" if isinstance(price, (int, float)) else str(price or "")
+                    ),
+                    "currency": currency,
+                    "hint": " · ".join(part for part in hint_bits if part),
+                    "booking_url": detail_url,
+                    "detail_url": detail_url,
+                    "source": row.get("source"),
+                }
+            )
+        capped = results[:8]
         return {
-            "results": results[:8],
-            "count": len(results[:8]),
+            "results": capped,
+            "count": len(capped),
             "provider": "SUPER_TRAVEL",
             "city": args.city,
             "check_in": args.check_in,
             "check_out": args.check_out,
+            "booking_url": list_url,
         }
 
     async def _fetch_venue_rows(
@@ -1350,6 +1428,8 @@ class TravelToolExecutor:
                 "budget": int(args.budget) if args.budget else None,
                 "services": args.services,
                 "location": card_city or args.city,
+                "pricing_type": args.pricing_type,
+                "time": args.preferred_time,
             }
             query = urlencode(
                 {key: value for key, value in extra.items() if value not in (None, "", [])}
@@ -1389,6 +1469,8 @@ class TravelToolExecutor:
             "kind": args.venue_kind,
             "budget": int(args.budget) if args.budget else None,
             "services": args.services,
+            "pricing_type": args.pricing_type,
+            "time": args.preferred_time,
         }
         list_query = urlencode(
             {key: value for key, value in list_extra.items() if value not in (None, "", [])}

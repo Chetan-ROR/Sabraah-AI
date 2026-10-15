@@ -9,6 +9,24 @@ from app.models import SessionState
 _PROMPT_PATH = Path(__file__).with_name("system_prompt.txt")
 _agent_store = None
 
+DEFAULT_FIRST_MESSAGE = (
+    "Hello! I'm Sabraah AI — your personal travel, entertainment and lifestyle assistant. "
+    "Whether you're planning a quick getaway, family holiday, group trip, business journey, "
+    "luxury escape, or simply looking for the next event or experience to enjoy, I'm here to make it easier. "
+    "You don't need to have everything figured out. Just tell me why you're travelling, "
+    "where you want to go, when you'd like to travel, who you're travelling with, "
+    "and what kind of experience you're looking for — and I'll help you plan the journey "
+    "around your needs, preferences and budget. "
+    "I can help you discover, compare, plan and book everything from your travel to your stay and experiences. "
+    "Flights, hotels, trains, buses, cars, cruises, experiences, and holiday packages — "
+    "you can ask me anything, or simply say Plan my trip and let's start from there. "
+    "So, what are you travelling for, and where would you like to go?"
+)
+
+MAIN_MENU_SHORT_LINE = (
+    "Hello again! I'm Sabraah. So, what are you travelling for, and where would you like to go?"
+)
+
 
 def set_agent_store(store) -> None:
     """Inject agent store so prompts can resolve per-agent system text."""
@@ -35,9 +53,7 @@ def load_first_message(agent_id: Optional[str] = None) -> str:
             agent = _agent_store.get_default()
         if agent is not None and agent.first_message.strip():
             return agent.first_message.strip()
-    return (
-        "What would you like to do — book a flight, book a train, book an event, cancel a ticket, or request a refund?"
-    )
+    return DEFAULT_FIRST_MESSAGE
 
 
 def _summarize_search_results(results: list) -> list[dict]:

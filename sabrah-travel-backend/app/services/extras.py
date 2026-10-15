@@ -135,7 +135,7 @@ def search_local_transport(
     options = [
         {
             "id": f"CAB-{city_t[:3].upper()}-001",
-            "name": "Sabrah Cab — Sedan",
+            "name": "Sabraah Cab — Sedan",
             "type": "cab",
             "city": city_t,
             "pickup": pickup_t,
@@ -147,7 +147,7 @@ def search_local_transport(
         },
         {
             "id": f"CAB-{city_t[:3].upper()}-002",
-            "name": "Sabrah Cab — SUV",
+            "name": "Sabraah Cab — SUV",
             "type": "cab",
             "city": city_t,
             "pickup": pickup_t,

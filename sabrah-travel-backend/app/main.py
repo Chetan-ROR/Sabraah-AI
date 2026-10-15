@@ -1,4 +1,4 @@
-"""Sabrah Travel Backend FastAPI entrypoint."""
+"""Sabraah Travel Backend FastAPI entrypoint."""
 
 import logging
 from contextlib import asynccontextmanager

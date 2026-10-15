@@ -53,12 +53,15 @@ class TravelSlotMemory(BaseModel):
     venue_kind: Optional[str] = None
     # none | food | decoration | food_decoration
     venue_services: Optional[str] = None
+    venue_pricing_type: Optional[str] = None
+    venue_preferred_time: Optional[str] = None
     selected_venue_id: Optional[str] = None
     extra_meal: Optional[str] = None
     extra_baggage: Optional[str] = None
     extra_checkin: Optional[str] = None
     flight_fare_name: Optional[str] = None
     hotel_area: Optional[str] = None
+    hotel_rooms: Optional[int] = None
     # book_train | book_flight | book_event | book_venue | cancel | refund | charter | (legacy support)
     user_goal: Optional[str] = None
     # welcome | goal | where | why | when | passengers | search | ...

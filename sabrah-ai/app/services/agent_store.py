@@ -10,6 +10,7 @@ from typing import Optional
 from uuid import uuid4
 
 from app.models import AgentCreate, AgentRecord, AgentUpdate
+from app.prompts import DEFAULT_FIRST_MESSAGE
 
 _DEFAULT_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "system_prompt.txt"
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
@@ -28,10 +29,7 @@ def _seed_agents() -> list[AgentRecord]:
         id="agent-sabrah",
         name="Sabraah",
         description="SABRAAH's journey companion — trips, stays, events, and celebrations.",
-        first_message=(
-            "Hi, I'm Sabraah. Let's plan something you'll remember — "
-            "a getaway, a stay, or a celebration. What's on your mind?"
-        ),
+        first_message=DEFAULT_FIRST_MESSAGE,
         system_prompt=_default_system_prompt(),
         enabled=True,
         created_at=now,

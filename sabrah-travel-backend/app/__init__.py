@@ -1,1 +1,1 @@
-"""Sabrah Travel Backend application package."""
+"""Sabraah Travel Backend application package."""

@@ -272,7 +272,7 @@ class MockHotelProvider(HotelProvider):
         hotels = [
             HotelResult(
                 id="HOTEL-001",
-                name="Sabrah Grand Hotel",
+                name="Sabraah Grand Hotel",
                 city=city.title(),
                 check_in=check_in,
                 check_out=check_out,
@@ -387,7 +387,7 @@ class MockPackageProvider(PackageProvider):
             hotel_cost = 4500 * nights
             hotel = {
                 "option_id": "HOTEL-001",
-                "name": "Sabrah Grand Hotel",
+                "name": "Sabraah Grand Hotel",
                 "nights": nights,
                 "estimated_price": hotel_cost,
             }

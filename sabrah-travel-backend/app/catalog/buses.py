@@ -15,7 +15,7 @@ DEFAULT_ROUTES: dict[str, list[dict[str, Any]]] = {
         {
             "id": "BUS-KND-IND-001",
             "name": "Indore Express AC",
-            "operator": "Sabrah Travels",
+            "operator": "Sabraah Travels",
             "departure_time": "07:30",
             "arrival_time": "11:15",
             "duration": "3h 45m",
@@ -57,7 +57,7 @@ DEFAULT_ROUTES: dict[str, list[dict[str, Any]]] = {
         {
             "id": "BUS-IND-KND-001",
             "name": "Khandwa Link AC",
-            "operator": "Sabrah Travels",
+            "operator": "Sabraah Travels",
             "departure_time": "15:00",
             "arrival_time": "18:40",
             "duration": "3h 40m",

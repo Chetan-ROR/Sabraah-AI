@@ -1,13 +1,13 @@
-# Sabrah Travel Backend
+# Sabraah Travel Backend
 
 FastAPI service for travel search, package planning, and bookings.
 
-Sabrah AI calls this service over HTTP. It does **not** call OpenAI or ElevenLabs.
+Sabraah AI calls this service over HTTP. It does **not** call OpenAI or ElevenLabs.
 
 ## Requirements
 
 - Python 3.11+
-- Local API key shared with Sabrah AI (`API_KEY`)
+- Local API key shared with Sabraah AI (`API_KEY`)
 
 ## Installation
 
@@ -31,7 +31,7 @@ HOTEL_PROVIDER=mock
 PACKAGE_PROVIDER=mock
 ```
 
-`API_KEY` must match `TRAVEL_BACKEND_API_KEY` in Sabrah AI.
+`API_KEY` must match `TRAVEL_BACKEND_API_KEY` in Sabraah AI.
 
 ## Run
 
@@ -83,9 +83,9 @@ TRAIN_PROVIDER=real
 SUPER_TRAVEL_API_BASE_URL=http://127.0.0.1:8002
 ```
 
-Run `api-repository` on port **8002** (Sabrah AI uses 8000, this service uses 8001).
+Run `api-repository` on port **8002** (Sabraah AI uses 8000, this service uses 8001).
 
-Sabrah AI does not need changes.
+Sabraah AI does not need changes.
 
 ## Tests
 
@@ -95,4 +95,4 @@ pytest -q
 
 ## Connecting real travel APIs later
 
-Keep request/response schemas stable. Point provider implementations at your IRCTC / airline / hotel APIs. Sabrah AI tool definitions already call these HTTP paths.
+Keep request/response schemas stable. Point provider implementations at your IRCTC / airline / hotel APIs. Sabraah AI tool definitions already call these HTTP paths.

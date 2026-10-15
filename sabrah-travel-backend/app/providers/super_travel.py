@@ -210,7 +210,7 @@ def map_live_to_sabrah(
     *,
     train_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Normalize Super Travel live payload to Sabrah live_status shape."""
+    """Normalize Super Travel live payload to Sabraah live_status shape."""
     status_raw = str(
         data.get("current_status") or data.get("status") or "UNKNOWN"
     ).upper()

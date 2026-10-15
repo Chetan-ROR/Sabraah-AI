@@ -10,7 +10,7 @@ import time
 from typing import Any, Optional
 
 from app.models import ChatResponse, SessionState
-from app.prompts import build_system_message
+from app.prompts import MAIN_MENU_SHORT_LINE, build_system_message, load_first_message
 from app.providers import (
     LLMProvider,
     ProviderError,
@@ -57,10 +57,7 @@ SCREEN_OPTIONS_LINE = (
     "Please read them and tell me which option you want."
 )
 
-MAIN_MENU_LINE = (
-    "Hi, I'm Sabraah. Let's plan something you'll remember — "
-    "a getaway, a stay, or a celebration. What's on your mind?"
-)
+MAIN_MENU_LINE = MAIN_MENU_SHORT_LINE
 
 PURPOSE_ASK_LINE = (
     "What's the trip for — leisure, family, business, honeymoon, medical, "
@@ -675,6 +672,9 @@ class ConversationAgent:
         if session.memory.user_goal == "book_venue" and session.memory.flow_step == "venue_open":
             booking_url = self._selected_venue_booking_url(session)
             open_booking = bool(booking_url)
+        if session.memory.user_goal == "book_hotel" and session.memory.flow_step == "hotel_open":
+            booking_url = self._selected_hotel_booking_url(session)
+            open_booking = bool(booking_url)
         if session.memory.user_goal == "book_flight" and session.memory.flow_step == "flight_open":
             checkout = session.last_offerings.get("flight_checkout") or {}
             if isinstance(checkout, dict) and checkout.get("booking_url"):
@@ -1003,8 +1003,12 @@ class ConversationAgent:
             elif tool_name == "search_hotels":
                 session.last_offerings["hotels"] = result["results"]
                 session.itinerary_cache["hotels"] = result["results"]
+                for row in result["results"]:
+                    if isinstance(row, dict):
+                        self._sync_hotel_card_url(session, row)
             elif tool_name == "search_venues":
                 session.last_offerings["venues"] = result["results"]
+                self._patch_venue_rfp_urls(session)
                 if result.get("booking_url"):
                     session.last_offerings["venue_checkout"] = {
                         "booking_url": result.get("booking_url"),
@@ -1947,6 +1951,10 @@ class ConversationAgent:
                 "hi",
                 "hello",
             }
+            or re.search(
+                r"\b(how(?:'?s| is) your day|good morning|good afternoon|good evening)\b",
+                text,
+            )
         )
 
     @staticmethod
@@ -1968,6 +1976,13 @@ class ConversationAgent:
         # Conversational only — no leftover event/train cards on screen.
         session.last_offerings.clear()
         session.memory.flow_step = "goal"
+        prior = [
+            m
+            for m in session.conversation_history
+            if m.role in ("user", "assistant") and (m.content or "").strip()
+        ]
+        if len(prior) <= 1 and all(m.role == "user" for m in prior):
+            return load_first_message(session.agent_id)
         return MAIN_MENU_LINE
 
     def _show_purpose_menu(self, session: SessionState) -> str:
@@ -2203,6 +2218,30 @@ class ConversationAgent:
         nights = re.search(r"\b(\d{1,2})\s*(?:nights?|days?)\b", ConversationAgent._words_to_nums(text))
         if nights:
             mem.trip_nights = int(nights.group(1))
+
+        if mem.user_goal == "book_hotel" or mem.booking_mode == "hotel":
+            stay_city = (
+                ConversationAgent._parse_destination_mention(user_text)
+                or ConversationAgent._city_from_text(user_text)
+            )
+            if stay_city and (
+                not mem.hotel_area
+                or mem.flow_step in {"hotel_city", "goal", None}
+            ):
+                mem.hotel_area = stay_city
+                mem.destination = stay_city
+            room_match = re.search(r"\b(\d{1,2})\s*rooms?\b", text)
+            if room_match:
+                mem.hotel_rooms = int(room_match.group(1))
+            elif mem.flow_step == "hotel_rooms" and (
+                ConversationAgent._user_said_no(user_text) or "skip" in text
+            ):
+                mem.hotel_rooms = 1
+            if mem.flow_step == "hotel_budget" and (
+                ConversationAgent._user_said_no(user_text)
+                or re.search(r"\b(skip|no budget|flexible|any budget)\b", text)
+            ):
+                mem.budget = 0
 
         if re.search(r"\b(direct|non[-\s]?stop|no (?:layover|connection))\b", text):
             mem.direct_only = True
@@ -3624,27 +3663,158 @@ class ConversationAgent:
         return ConversationAgent._with_query(url, extra) if extra else url
 
     @staticmethod
-    def _selected_venue_booking_url(session: SessionState) -> Optional[str]:
-        venues = session.last_offerings.get("venues") or []
+    def _venue_rfp_query_params(mem: Any) -> dict[str, Any]:
+        city = mem.destination or mem.hotel_area
+        params: dict[str, Any] = {}
+        if mem.passenger_count:
+            params["guests"] = int(mem.passenger_count)
+        if mem.departure_date and not mem.date_flexible:
+            params["date"] = mem.departure_date
+        if mem.venue_event_type:
+            params["event"] = mem.venue_event_type
+        if mem.venue_kind and mem.venue_kind not in {None, "any"}:
+            params["kind"] = mem.venue_kind
+        if mem.budget is not None and mem.budget > 0:
+            params["budget"] = int(mem.budget)
+        if mem.venue_services and mem.venue_services != "none":
+            params["services"] = mem.venue_services
+        if city:
+            params["location"] = city
+        pricing = getattr(mem, "venue_pricing_type", None)
+        if pricing and pricing not in {None, "any"}:
+            params["pricing_type"] = pricing
+        pref_time = getattr(mem, "venue_preferred_time", None)
+        if pref_time and pref_time not in {None, "any", ""}:
+            params["time"] = pref_time
+        return params
+
+    @staticmethod
+    def _venue_rfp_ready(mem: Any) -> bool:
+        if not mem.venue_event_type or not mem.passenger_count:
+            return False
+        if not (mem.destination or mem.hotel_area):
+            return False
+        if not mem.departure_date and not mem.date_flexible:
+            return False
+        if not mem.venue_kind:
+            return False
+        if mem.venue_services is None:
+            return False
+        if mem.budget is None:
+            return False
+        if mem.venue_pricing_type is None:
+            return False
+        if mem.venue_preferred_time is None:
+            return False
+        return True
+
+    def _build_venue_rfp_url(self, session: SessionState, venue_id: str) -> str:
+        from urllib.parse import urlencode
+
+        web = (self._tools._client._web_app_base_url or "").rstrip("/")
+        params = ConversationAgent._venue_rfp_query_params(session.memory)
+        query = urlencode(
+            {key: value for key, value in params.items() if value not in (None, "", [])}
+        )
+        path = f"/venue-booking-detail/{venue_id}"
+        if web and query:
+            return f"{web}{path}?{query}"
+        if web:
+            return f"{web}{path}"
+        return f"{path}?{query}" if query else path
+
+    def _selected_venue_booking_url(self, session: SessionState) -> Optional[str]:
         selected_id = str(session.memory.selected_venue_id or "")
-        picked = None
-        if selected_id and isinstance(venues, list):
-            picked = next(
-                (
-                    item
-                    for item in venues
-                    if isinstance(item, dict) and str(item.get("id") or "") == selected_id
-                ),
-                None,
-            )
-        if isinstance(picked, dict) and picked.get("booking_url"):
-            return str(picked["booking_url"])
         if not selected_id:
             return None
-        checkout = session.last_offerings.get("venue_checkout") or {}
-        if isinstance(checkout, dict) and checkout.get("booking_url"):
-            return str(checkout["booking_url"])
-        return None
+        return self._build_venue_rfp_url(session, selected_id)
+
+    @staticmethod
+    def _hotel_stay_query_params(mem: Any) -> dict[str, Any]:
+        city = mem.hotel_area or mem.destination or mem.source
+        params: dict[str, Any] = {}
+        if city:
+            params["city"] = city
+        if mem.departure_date:
+            params["checkIn"] = mem.departure_date
+        if mem.return_date:
+            params["checkOut"] = mem.return_date
+        guests = mem.passenger_count or mem.adult_count
+        if guests:
+            params["adults"] = int(guests)
+        rooms = getattr(mem, "hotel_rooms", None) or 1
+        params["rooms"] = int(rooms)
+        return params
+
+    def _build_hotel_detail_url(self, session: SessionState, hotel_id: str) -> str:
+        from urllib.parse import urlencode
+
+        web = (self._tools._client._web_app_base_url or "").rstrip("/")
+        params = ConversationAgent._hotel_stay_query_params(session.memory)
+        query = urlencode(
+            {key: value for key, value in params.items() if value not in (None, "", [])}
+        )
+        path = f"/hotel-detail/{hotel_id}"
+        if web and query:
+            return f"{web}{path}?{query}"
+        if web:
+            return f"{web}{path}"
+        return f"{path}?{query}" if query else path
+
+    def _selected_hotel_booking_url(self, session: SessionState) -> Optional[str]:
+        selected_id = str(session.memory.selected_hotel_id or "")
+        if not selected_id:
+            return None
+        return self._build_hotel_detail_url(session, selected_id)
+
+    def _sync_hotel_card_url(self, session: SessionState, row: dict[str, Any]) -> None:
+        hotel_id = str(row.get("id") or "")
+        if not hotel_id:
+            return
+        row["booking_url"] = self._build_hotel_detail_url(session, hotel_id)
+        hotels = session.last_offerings.get("hotels") or []
+        if isinstance(hotels, list):
+            for index, item in enumerate(hotels):
+                if isinstance(item, dict) and str(item.get("id") or "") == hotel_id:
+                    hotels[index] = {**item, "booking_url": row["booking_url"]}
+                    break
+
+    def _sync_venue_rfp_url(self, session: SessionState, row: dict[str, Any]) -> None:
+        venue_id = str(row.get("id") or "")
+        if not venue_id:
+            return
+        row["booking_url"] = self._build_venue_rfp_url(session, venue_id)
+        venues = session.last_offerings.get("venues") or []
+        if isinstance(venues, list):
+            for index, item in enumerate(venues):
+                if isinstance(item, dict) and str(item.get("id") or "") == venue_id:
+                    venues[index] = {**item, "booking_url": row["booking_url"]}
+                    break
+
+    def _patch_venue_rfp_urls(self, session: SessionState) -> None:
+        venues = session.last_offerings.get("venues") or []
+        if not isinstance(venues, list):
+            return
+        for row in venues:
+            if isinstance(row, dict):
+                self._sync_venue_rfp_url(session, row)
+
+    @staticmethod
+    def _venue_search_tool_args(mem: Any) -> dict[str, Any]:
+        city = mem.destination or mem.hotel_area
+        pricing = getattr(mem, "venue_pricing_type", None)
+        pref_time = getattr(mem, "venue_preferred_time", None)
+        return {
+            "city": city,
+            "event_type": mem.venue_event_type,
+            "venue_kind": None if mem.venue_kind in {None, "any"} else mem.venue_kind,
+            "guests": mem.passenger_count,
+            "event_date": mem.departure_date if not mem.date_flexible else None,
+            "budget": mem.budget if mem.budget and mem.budget > 0 else None,
+            "services": mem.venue_services if mem.venue_services != "none" else None,
+            "pricing_type": None if pricing in {None, "any"} else pricing,
+            "preferred_time": None if pref_time in {None, "any", ""} else pref_time,
+        }
 
     async def _load_event_details(
         self,
@@ -4069,8 +4239,7 @@ class ConversationAgent:
                     mem.booking_mode = "hotel"
                     mem.hotel_required = True
                     mem.intent = "book"
-                    if not (mem.destination or mem.source):
-                        return "Which city should I search hotels in?"
+                    return await self._handle_hotel_flow(session, user_text, tools_used)
                 elif matched_goal == "book_flight":
                     mem.booking_mode = "flight"
                     mem.transport_type = "flight"
@@ -4395,45 +4564,91 @@ class ConversationAgent:
     async def _handle_hotel_flow(
         self, session: SessionState, user_text: str, tools_used: list[str]
     ) -> Optional[str]:
+        from datetime import datetime, timedelta
+
         mem = session.memory
+        mem.user_goal = "book_hotel"
+        mem.booking_mode = "hotel"
+        mem.intent = "book"
+
         city = mem.hotel_area or mem.destination or mem.source
         if not city:
-            return "Which city should I search hotels in?"
+            mem.flow_step = "hotel_city"
+            return "Which city are you looking for a hotel in?"
+        mem.hotel_area = city
         mem.destination = mem.destination or city
+
         if not mem.departure_date:
-            return f"Hotels in {city}. What check-in date? Say tomorrow or 20 September 2026."
-        nights = mem.trip_nights or 1
+            mem.flow_step = "hotel_checkin"
+            return (
+                f"Hotels in {city}. What's your check-in date? "
+                "Say tomorrow or a date like 20 October 2026."
+            )
+
+        if not mem.trip_nights and not mem.return_date:
+            mem.flow_step = "hotel_nights"
+            return "How many nights are you staying?"
+
         check_out = mem.return_date
         if not check_out:
-            from datetime import datetime, timedelta
-
+            nights = max(1, int(mem.trip_nights or 1))
             try:
                 check_out = (
-                    datetime.fromisoformat(mem.departure_date) + timedelta(days=max(1, nights))
+                    datetime.fromisoformat(mem.departure_date) + timedelta(days=nights)
                 ).date().isoformat()
             except ValueError:
                 check_out = mem.departure_date
             mem.return_date = check_out
-        guests = mem.passenger_count or mem.adult_count or 2
+
         if not mem.passenger_count:
             parsed = self._parse_passenger_count(user_text)
             if parsed:
                 mem.passenger_count = parsed
-                guests = parsed
-            elif not re.search(r"\b(hotel|stay|room|search)\b", (user_text or "").lower()):
-                return "How many guests, and how many nights?"
-        already = session.last_offerings.get("hotels") or []
-        if already:
-            matched = self._match_option(user_text, already)
+                mem.adult_count = mem.adult_count or parsed
+            else:
+                mem.flow_step = "hotel_guests"
+                return "How many guests will be staying?"
+
+        if mem.hotel_rooms is None:
+            mem.flow_step = "hotel_rooms"
+            return "How many rooms do you need? Say a number, or skip for one room."
+
+        if mem.budget is None:
+            mem.flow_step = "hotel_budget"
+            return "Any budget for the stay? Say an amount, or skip."
+
+        guests = mem.passenger_count or mem.adult_count or 2
+        rooms = max(1, int(mem.hotel_rooms or 1))
+
+        hotels = [
+            item
+            for item in (session.last_offerings.get("hotels") or [])
+            if isinstance(item, dict)
+        ]
+        if hotels:
+            matched = self._match_option(user_text, hotels)
             if matched is None:
-                return None
-            mem.selected_hotel_id = str(matched.get("id") or "")
-            session.itinerary_selections["hotel"] = matched
-            name = matched.get("name") or "that hotel"
-            return (
-                f"Got {name}. Hotel checkout still finishes in the Super Travel app. "
-                "Say another city or date if you want a new search."
-            )
+                named = next(
+                    (
+                        row
+                        for row in hotels
+                        if str(row.get("name") or "").lower() in (user_text or "").lower()
+                        and row.get("name")
+                    ),
+                    None,
+                )
+                matched = named
+            if matched is not None:
+                self._sync_hotel_card_url(session, matched)
+                mem.selected_hotel_id = str(matched.get("id") or "")
+                session.itinerary_selections["hotel"] = matched
+                mem.flow_step = "hotel_open"
+                name = matched.get("name") or "that hotel"
+                return (
+                    f"Opening {name} with your dates and guest count. "
+                    "Pick a room on the page to continue booking in Super Travel."
+                )
+
         result = await self._tools.execute(
             "search_hotels",
             {
@@ -4441,21 +4656,26 @@ class ConversationAgent:
                 "check_in": mem.departure_date,
                 "check_out": check_out,
                 "guests": guests,
-                "rooms": 1,
-                "budget_max": mem.budget,
+                "rooms": rooms,
+                "budget_max": mem.budget if mem.budget and mem.budget > 0 else None,
             },
             session_id=session.session_id,
+            user_access_token=session.user_access_token,
         )
         tools_used.append("search_hotels")
         self._update_memory_from_tool(session, "search_hotels", {"city": city}, result)
+        if isinstance(result, dict) and result.get("error") == "login_required":
+            return "Please log in to Super Travel first, then I can show hotels."
         rows = result.get("results") if isinstance(result, dict) else None
         if rows:
-            mem.source = mem.source or city
-            mem.destination = city
+            for row in rows:
+                if isinstance(row, dict):
+                    self._sync_hotel_card_url(session, row)
+            mem.flow_step = "hotel_pick"
             return self._speak_options(session, rows, "hotels")
-        return (
-            (result.get("message") if isinstance(result, dict) else None)
-            or f"I could not find hotels in {city} for those dates."
+        fail = str(result.get("message") or "") if isinstance(result, dict) else ""
+        return self._search_failed_reply("hotels", mem, fail) or (
+            f"I could not find hotels in {city} for those dates."
         )
 
     _VENUE_EVENT_TYPES = (
@@ -4562,6 +4782,37 @@ class ConversationAgent:
     def _venue_plain_text(user_text: str) -> str:
         text = re.sub(r"[^a-z0-9\s]", " ", (user_text or "").lower())
         return " ".join(text.split())
+
+    @staticmethod
+    def _parse_venue_pricing_type(user_text: str) -> Optional[str]:
+        text = ConversationAgent._venue_plain_text(user_text)
+        if re.search(r"\b(per day|perday|daily|whole day)\b", text):
+            return "per_day"
+        if re.search(r"\b(per hour|perhour|hourly)\b", text):
+            return "per_hour"
+        if re.search(r"\b(per plate|perplate|plate)\b", text):
+            return "per_plate"
+        if re.search(r"\b(per event|perevent|full event)\b", text):
+            return "per_event"
+        return None
+
+    @staticmethod
+    def _parse_preferred_time(user_text: str) -> Optional[str]:
+        text = (user_text or "").strip().lower()
+        m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", text)
+        if m:
+            hour = int(m.group(1))
+            minute = int(m.group(2) or 0)
+            mer = m.group(3)
+            if mer == "pm" and hour < 12:
+                hour += 12
+            if mer == "am" and hour == 12:
+                hour = 0
+            return f"{hour:02d}:{minute:02d}"
+        m24 = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+        if m24:
+            return f"{int(m24.group(1)):02d}:{m24.group(2)}"
+        return None
 
     @staticmethod
     def _parse_venue_kind(user_text: str) -> Optional[str]:
@@ -4735,6 +4986,22 @@ class ConversationAgent:
         if mem.flow_step == "venue_services" and not mem.venue_services:
             if ConversationAgent._user_said_no(user_text) or "skip" in text:
                 mem.venue_services = "none"
+        if mem.flow_step == "venue_pricing" or ConversationAgent._parse_venue_pricing_type(
+            user_text
+        ):
+            parsed_pricing = ConversationAgent._parse_venue_pricing_type(user_text)
+            if parsed_pricing:
+                mem.venue_pricing_type = parsed_pricing
+            elif mem.flow_step == "venue_pricing" and (
+                ConversationAgent._user_said_no(user_text) or "skip" in text
+            ):
+                mem.venue_pricing_type = "any"
+        if mem.flow_step == "venue_preferred_time":
+            parsed_time = ConversationAgent._parse_preferred_time(user_text)
+            if parsed_time:
+                mem.venue_preferred_time = parsed_time
+            elif ConversationAgent._user_said_no(user_text) or "skip" in text:
+                mem.venue_preferred_time = "any"
 
     @staticmethod
     def _wants_open_venue_pages(user_text: str) -> bool:
@@ -5039,15 +5306,7 @@ class ConversationAgent:
         if self._wants_venue_list_read(user_text):
             city = mem.destination or mem.hotel_area
             if not venues:
-                args = {
-                    "city": city,
-                    "event_type": mem.venue_event_type,
-                    "venue_kind": None if mem.venue_kind in {None, "any"} else mem.venue_kind,
-                    "guests": mem.passenger_count,
-                    "event_date": mem.departure_date,
-                    "budget": mem.budget if mem.budget and mem.budget > 0 else None,
-                    "services": mem.venue_services if mem.venue_services != "none" else None,
-                }
+                args = self._venue_search_tool_args(mem)
                 result = await self._tools.execute(
                     "search_venues",
                     args,
@@ -5137,6 +5396,14 @@ class ConversationAgent:
         if mem.budget is None:
             mem.flow_step = "venue_budget"
             return "Any budget? Say an amount, or skip."
+        if mem.venue_pricing_type is None:
+            mem.flow_step = "venue_pricing"
+            return (
+                "Which pricing option fits — per day, per hour, per plate, per event, or skip?"
+            )
+        if mem.venue_preferred_time is None:
+            mem.flow_step = "venue_preferred_time"
+            return "Preferred start time? For example 6 PM, or say skip."
 
         if venues:
             matched = self._match_option(user_text, venues)
@@ -5155,13 +5422,13 @@ class ConversationAgent:
                     return await self._handle_venue_details_request(
                         session, user_text, venues, tools_used
                     )
+                self._sync_venue_rfp_url(session, matched)
                 mem.selected_venue_id = str(matched.get("id") or "")
                 mem.flow_step = "venue_open"
                 name = matched.get("name") or "that venue"
                 return (
-                    f"Opening the RFP page for {name}. "
-                    "Add food, decoration, and event-company needs in additional requirements. "
-                    "After you send it, proposals show under your RFPs."
+                    f"Opening the RFP for {name} with your event, guests, date, and budget filled in. "
+                    "Add any extra requirements, then submit. Proposals show under your RFPs."
                 )
             if self._wants_open_venue_pages(user_text) or self._user_said_yes(user_text):
                 mem.selected_venue_id = None
@@ -5179,15 +5446,7 @@ class ConversationAgent:
                 "to send RFPs and add event-company services."
             )
 
-        args = {
-            "city": city,
-            "event_type": mem.venue_event_type,
-            "venue_kind": None if mem.venue_kind in {None, "any"} else mem.venue_kind,
-            "guests": mem.passenger_count,
-            "event_date": mem.departure_date,
-            "budget": mem.budget if mem.budget and mem.budget > 0 else None,
-            "services": mem.venue_services if mem.venue_services != "none" else None,
-        }
+        args = self._venue_search_tool_args(mem)
         result = await self._tools.execute(
             "search_venues",
             args,

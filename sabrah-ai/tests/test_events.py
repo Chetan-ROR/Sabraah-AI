@@ -1065,19 +1065,74 @@ def test_venue_one_shot_does_not_become_charter() -> None:
 
 
 def test_venue_pick_opens_rfp_url() -> None:
+    from unittest.mock import MagicMock
+
     from app.agents import ConversationAgent
     from app.models import SessionState
 
+    agent = ConversationAgent.__new__(ConversationAgent)
+    agent._tools = MagicMock()
+    agent._tools._client._web_app_base_url = "http://127.0.0.1:3000"
     session = SessionState(session_id="s1")
     session.memory.user_goal = "book_venue"
     session.memory.selected_venue_id = "21"
+    session.memory.passenger_count = 200
+    session.memory.venue_event_type = "wedding"
+    session.memory.destination = "Jaipur"
+    session.memory.venue_kind = "banquet"
+    session.memory.venue_services = "food_decoration"
+    session.memory.budget = 500000
+    session.memory.venue_pricing_type = "per_day"
+    session.memory.venue_preferred_time = "any"
     session.last_offerings["venues"] = [
         {
             "id": "21",
             "name": "Royal Banquet Jaipur",
-            "booking_url": "http://127.0.0.1:3000/venue-booking-detail/21?guests=200",
+            "booking_url": "http://127.0.0.1:3000/venue-booking-detail/21",
         }
     ]
-    url = ConversationAgent._selected_venue_booking_url(session)
+    url = agent._selected_venue_booking_url(session)
     assert "/venue-booking-detail/21" in url
     assert "guests=200" in url
+    assert "event=wedding" in url
+    assert "pricing_type=per_day" in url
+
+
+def test_hotel_search_rows_unwraps_api_repository_payload() -> None:
+    from app.tools import TravelToolExecutor
+
+    rows = TravelToolExecutor._hotel_search_rows(
+        {
+            "session_id": "abc",
+            "next_token": "2",
+            "data": [{"id": 10, "name": "Lake View"}],
+        }
+    )
+    assert len(rows) == 1
+    nested = TravelToolExecutor._hotel_search_rows(
+        {"data": {"data": [{"id": 11, "name": "City Inn"}]}}
+    )
+    assert nested[0]["name"] == "City Inn"
+
+
+def test_hotel_detail_url_from_memory() -> None:
+    from unittest.mock import MagicMock
+
+    from app.agents import ConversationAgent
+    from app.models import SessionState
+
+    agent = ConversationAgent.__new__(ConversationAgent)
+    agent._tools = MagicMock()
+    agent._tools._client._web_app_base_url = "http://127.0.0.1:3000"
+    session = SessionState(session_id="s1")
+    session.memory.user_goal = "book_hotel"
+    session.memory.hotel_area = "Goa"
+    session.memory.departure_date = "2026-12-01"
+    session.memory.return_date = "2026-12-03"
+    session.memory.passenger_count = 2
+    session.memory.hotel_rooms = 1
+    session.memory.selected_hotel_id = "55"
+    url = agent._selected_hotel_booking_url(session)
+    assert "/hotel-detail/55" in url
+    assert "checkIn=2026-12-01" in url
+    assert "adults=2" in url

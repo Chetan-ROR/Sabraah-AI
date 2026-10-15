@@ -1,8 +1,8 @@
-# Sabrah
+# Sabraah
 
 Voice-based AI travel assistant MVP.
 
-Sabrah AI talks to **api-repository** (Super Travel Django API). Do not run `sabrah-travel-backend` for this flow.
+Sabraah AI talks to **api-repository** (Super Travel Django API). Do not run `sabrah-travel-backend` for this flow.
 
 | Project | Port | Responsibility |
 |---------|------|----------------|
@@ -25,7 +25,7 @@ ElevenLabs Text-to-Speech      (sabrah-ai)
 Browser speaker
 ```
 
-Travel business logic lives in **api-repository** (Super Travel Django API on port 8002). `sabrah-travel-backend` is no longer used by Sabrah AI.
+Travel business logic lives in **api-repository** (Super Travel Django API on port 8002). `sabrah-travel-backend` is no longer used by Sabraah AI.
 
 ```text
 Browser microphone
@@ -69,7 +69,7 @@ TRAVEL_BACKEND_BASE_URL=http://127.0.0.1:8002
 SUPER_TRAVEL_API_BASE_URL=http://127.0.0.1:8002
 ```
 
-Start **api-repository** on port 8002 before Sabrah AI. `TRAVEL_BACKEND_API_KEY` is optional (search is anonymous; booking/payment needs a user JWT).
+Start **api-repository** on port 8002 before Sabraah AI. `TRAVEL_BACKEND_API_KEY` is optional (search is anonymous; booking/payment needs a user JWT).
 
 ### 3. Run
 
@@ -132,7 +132,7 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2
 
 - **Secrets stay server-side** — the browser never receives OpenAI or ElevenLabs keys.
 - **Providers are abstract** — STT / LLM / TTS can be swapped later (e.g. OpenAI Realtime).
-- **Travel providers are mock** — replace `MockTrainProvider` etc. without changing Sabrah AI.
+- **Travel providers are mock** — replace `MockTrainProvider` etc. without changing Sabraah AI.
 - **Booking safety** — create/cancel booking tools require explicit user confirmation in the LLM prompt + tool schema.
 
 ---
@@ -143,7 +143,7 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2
 # Travel backend
 cd sabrah-travel-backend && source .venv/bin/activate && pytest -q
 
-# Sabrah AI
+# Sabraah AI
 cd sabrah-ai && source .venv/bin/activate && pytest -q
 ```
 
@@ -157,6 +157,6 @@ In `sabrah-travel-backend`:
 
 1. Implement `RealTrainProvider`, `RealFlightProvider`, etc.
 2. Set `TRAIN_PROVIDER=real` (and similar) in `.env`
-3. Keep the same HTTP schemas so Sabrah AI tools keep working unchanged
+3. Keep the same HTTP schemas so Sabraah AI tools keep working unchanged
 
 See each project's README for details.
