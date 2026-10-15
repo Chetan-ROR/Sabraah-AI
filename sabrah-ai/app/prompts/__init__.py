@@ -74,13 +74,27 @@ def load_system_prompt(agent_id: Optional[str] = None) -> str:
     return _PROMPT_PATH.read_text(encoding="utf-8").strip()
 
 
+def is_stale_first_message(message: str) -> bool:
+    text = " ".join((message or "").split()).lower()
+    if not text:
+        return False
+    return (
+        "what would you like to do" in text
+        and "book a flight" in text
+        and "cancel a ticket" in text
+    )
+
+
 def load_first_message(agent_id: Optional[str] = None) -> str:
     if _agent_store is not None:
         agent = _agent_store.get(agent_id) if agent_id else None
         if agent is None:
             agent = _agent_store.get_default()
         if agent is not None and agent.first_message.strip():
-            return agent.first_message.strip()
+            msg = agent.first_message.strip()
+            if is_stale_first_message(msg):
+                return DEFAULT_FIRST_MESSAGE
+            return msg
     return DEFAULT_FIRST_MESSAGE
 
 

@@ -1115,6 +1115,20 @@ def test_hotel_search_rows_unwraps_api_repository_payload() -> None:
     assert nested[0]["name"] == "City Inn"
 
 
+def test_stale_first_message_uses_default_greeting() -> None:
+    from app.prompts import DEFAULT_FIRST_MESSAGE, is_stale_first_message, load_first_message
+
+    stale = (
+        "What would you like to do — book a flight, book a train, "
+        "book an event, cancel a ticket, or request a refund?"
+    )
+    assert is_stale_first_message(stale)
+    assert DEFAULT_FIRST_MESSAGE.startswith("Hello! 👋 I'm SABRAAH AI")
+    assert load_first_message() == DEFAULT_FIRST_MESSAGE or load_first_message().startswith(
+        "Hello! 👋 I'm SABRAAH AI"
+    )
+
+
 def test_parse_hotel_rooms_one_room() -> None:
     from app.agents import ConversationAgent
 

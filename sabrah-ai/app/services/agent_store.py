@@ -10,7 +10,7 @@ from typing import Optional
 from uuid import uuid4
 
 from app.models import AgentCreate, AgentRecord, AgentUpdate
-from app.prompts import DEFAULT_FIRST_MESSAGE
+from app.prompts import DEFAULT_FIRST_MESSAGE, is_stale_first_message
 
 _DEFAULT_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "system_prompt.txt"
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
@@ -88,6 +88,14 @@ class AgentStore:
                 self._agents = {
                     item["id"]: AgentRecord.model_validate(item) for item in raw
                 }
+                changed = False
+                for agent in self._agents.values():
+                    if is_stale_first_message(agent.first_message):
+                        agent.first_message = DEFAULT_FIRST_MESSAGE
+                        agent.updated_at = datetime.utcnow()
+                        changed = True
+                if changed:
+                    self._persist_unlocked()
             else:
                 seeded = _seed_agents()
                 self._agents = {a.id: a for a in seeded}
