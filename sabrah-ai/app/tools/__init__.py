@@ -140,6 +140,7 @@ class SearchHotelsArgs(BaseModel):
     city: str
     check_in: str
     check_out: str
+    country: Optional[str] = "India"
     guests: int = Field(default=2, ge=1, le=10)
     rooms: int = Field(default=1, ge=1, le=5)
     budget_max: Optional[float] = None
@@ -451,6 +452,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "city": {"type": "string"},
+                    "country": {"type": "string"},
                     "check_in": {"type": "string"},
                     "check_out": {"type": "string"},
                     "guests": {"type": "integer"},
@@ -1139,11 +1141,13 @@ class TravelToolExecutor:
             }
             for index in range(rooms)
         ]
+        country = (args.country or "India").strip() or "India"
         data = await self._client.request(
             "POST",
             "/api/v1/hotels/hotel/search/",
             json={
                 "city": args.city,
+                "country": country,
                 "checkin": args.check_in,
                 "checkout": args.check_out,
                 "requiredCurrency": "INR",
@@ -1153,6 +1157,8 @@ class TravelToolExecutor:
             user_access_token=self._user_access_token,
         )
         rows = self._hotel_search_rows(data)
+        api_session_id = data.get("session_id") if isinstance(data, dict) else None
+        api_next_token = data.get("next_token") if isinstance(data, dict) else None
         web = (self._client._web_app_base_url or "").rstrip("/")
         list_query = urlencode(
             {
@@ -1172,12 +1178,26 @@ class TravelToolExecutor:
         )
         results = []
         for row in rows:
-            hotel_id = str(row.get("id") or row.get("hotel_id") or "")
+            hotel_id = str(
+                row.get("id")
+                or row.get("hotel_id")
+                or row.get("hotelId")
+                or row.get("productId")
+                or ""
+            ).strip()
+            name = (
+                row.get("name")
+                or row.get("hotelName")
+                or row.get("hotel_name")
+                or ""
+            ).strip()
+            if not hotel_id and name:
+                hotel_id = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48]
             if not hotel_id:
                 continue
             address = row.get("address") if isinstance(row.get("address"), dict) else {}
-            card_city = str(address.get("city") or args.city or "").strip()
-            price = row.get("price") or row.get("total_price") or row.get("price_per_night")
+            card_city = str(address.get("city") or row.get("city") or args.city or "").strip()
+            price = row.get("price") or row.get("total") or row.get("total_price") or row.get("price_per_night")
             currency = row.get("currency") or "INR"
             rating = row.get("rating")
             facilities = row.get("facilities")
@@ -1216,7 +1236,7 @@ class TravelToolExecutor:
             results.append(
                 {
                     "id": hotel_id,
-                    "name": row.get("name") or "Hotel",
+                    "name": name or "Hotel",
                     "city": card_city or args.city,
                     "rating": rating,
                     "price": price,
@@ -1234,11 +1254,15 @@ class TravelToolExecutor:
         return {
             "results": capped,
             "count": len(capped),
+            "raw_count": len(rows),
             "provider": "SUPER_TRAVEL",
             "city": args.city,
+            "country": country,
             "check_in": args.check_in,
             "check_out": args.check_out,
             "booking_url": list_url,
+            "hotel_session_id": api_session_id,
+            "hotel_next_token": api_next_token,
         }
 
     async def _fetch_venue_rows(

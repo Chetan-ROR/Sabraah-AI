@@ -1115,6 +1115,14 @@ def test_hotel_search_rows_unwraps_api_repository_payload() -> None:
     assert nested[0]["name"] == "City Inn"
 
 
+def test_parse_hotel_rooms_one_room() -> None:
+    from app.agents import ConversationAgent
+
+    assert ConversationAgent._parse_hotel_rooms("One room.") == 1
+    assert ConversationAgent._parse_hotel_rooms("2 rooms") == 2
+    assert ConversationAgent._parse_hotel_rooms("skip") == 1
+
+
 def test_hotel_detail_url_from_memory() -> None:
     from unittest.mock import MagicMock
 

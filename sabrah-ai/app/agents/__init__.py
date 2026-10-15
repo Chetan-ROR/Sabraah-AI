@@ -677,8 +677,14 @@ class ConversationAgent:
         if session.memory.user_goal == "book_venue" and session.memory.flow_step == "venue_open":
             booking_url = self._selected_venue_booking_url(session)
             open_booking = bool(booking_url)
-        if session.memory.user_goal == "book_hotel" and session.memory.flow_step == "hotel_open":
+        if session.memory.user_goal == "book_hotel" and session.memory.flow_step in {
+            "hotel_open",
+            "hotel_pick",
+        }:
+            checkout = session.last_offerings.get("hotel_checkout") or {}
             booking_url = self._selected_hotel_booking_url(session)
+            if not booking_url and isinstance(checkout, dict):
+                booking_url = checkout.get("booking_url")
             open_booking = bool(booking_url)
         if session.memory.user_goal == "book_flight" and session.memory.flow_step == "flight_open":
             checkout = session.last_offerings.get("flight_checkout") or {}
@@ -2189,6 +2195,24 @@ class ConversationAgent:
         return out
 
     @staticmethod
+    def _parse_hotel_rooms(user_text: str) -> Optional[int]:
+        text = ConversationAgent._words_to_nums((user_text or "").lower())
+        if ConversationAgent._user_said_no(user_text) or re.search(
+            r"\b(skip|single room|just one)\b", text
+        ):
+            return 1
+        match = re.search(r"\b(\d{1,2})\s*rooms?\b", text)
+        if match:
+            count = int(match.group(1))
+            if 1 <= count <= 5:
+                return count
+        if re.fullmatch(r"\s*(\d{1,2})\s*", text.strip()):
+            count = int(text.strip())
+            if 1 <= count <= 5:
+                return count
+        return None
+
+    @staticmethod
     def _ingest_trip_signals(session: SessionState, user_text: str) -> None:
         """Fill WHO / WHERE / WHEN / WHY / HOW / VALUE from natural language. Never overwrite blindly."""
         mem = session.memory
@@ -2224,24 +2248,28 @@ class ConversationAgent:
         if nights:
             mem.trip_nights = int(nights.group(1))
 
-        if mem.user_goal == "book_hotel" or mem.booking_mode == "hotel":
+        if (
+            mem.user_goal == "book_hotel"
+            or mem.booking_mode == "hotel"
+            or ConversationAgent._is_hotel_intent(text)
+        ):
             stay_city = (
                 ConversationAgent._parse_destination_mention(user_text)
                 or ConversationAgent._city_from_text(user_text)
             )
-            if stay_city and (
-                not mem.hotel_area
-                or mem.flow_step in {"hotel_city", "goal", None}
-            ):
+            if stay_city:
                 mem.hotel_area = stay_city
-                mem.destination = stay_city
-            room_match = re.search(r"\b(\d{1,2})\s*rooms?\b", text)
-            if room_match:
-                mem.hotel_rooms = int(room_match.group(1))
-            elif mem.flow_step == "hotel_rooms" and (
-                ConversationAgent._user_said_no(user_text) or "skip" in text
+                if (
+                    not mem.destination
+                    or mem.flow_step in {"hotel_city", "goal", None}
+                    or ConversationAgent._is_hotel_intent(text)
+                ):
+                    mem.destination = stay_city
+            parsed_rooms = ConversationAgent._parse_hotel_rooms(user_text)
+            if parsed_rooms is not None and (
+                mem.hotel_rooms is None or mem.flow_step == "hotel_rooms"
             ):
-                mem.hotel_rooms = 1
+                mem.hotel_rooms = parsed_rooms
             if mem.flow_step == "hotel_budget" and (
                 ConversationAgent._user_said_no(user_text)
                 or re.search(r"\b(skip|no budget|flexible|any budget)\b", text)
@@ -2603,6 +2631,14 @@ class ConversationAgent:
         dst = mem.destination or "that destination"
         safe = friendly_travel_error(fail, fallback="")
         looks_internal = (not safe) or "could not complete" in safe.lower()
+        if kind == "hotels":
+            city = mem.hotel_area or mem.destination or dst or "that city"
+            if looks_internal:
+                return (
+                    f"I could not find hotels in {city} for those dates. "
+                    "Try different dates or another city."
+                )
+            return safe
         if looks_internal:
             extra = (
                 " Please say a nearby railway station — for example Bhopal, Indore, or Nagpur."
@@ -4576,7 +4612,9 @@ class ConversationAgent:
         mem.booking_mode = "hotel"
         mem.intent = "book"
 
-        city = mem.hotel_area or mem.destination or mem.source
+        city = mem.hotel_area or mem.destination
+        if not city and mem.source and not mem.destination:
+            city = mem.source
         if not city:
             mem.flow_step = "hotel_city"
             return "Which city are you looking for a hotel in?"
@@ -4604,6 +4642,14 @@ class ConversationAgent:
             except ValueError:
                 check_out = mem.departure_date
             mem.return_date = check_out
+        if mem.departure_date and check_out and check_out <= mem.departure_date:
+            try:
+                check_out = (
+                    datetime.fromisoformat(mem.departure_date) + timedelta(days=1)
+                ).date().isoformat()
+                mem.return_date = check_out
+            except ValueError:
+                pass
 
         if not mem.passenger_count:
             parsed = self._parse_passenger_count(user_text)
@@ -4614,6 +4660,10 @@ class ConversationAgent:
                 mem.flow_step = "hotel_guests"
                 return "How many guests will be staying?"
 
+        if mem.hotel_rooms is None:
+            parsed_rooms = ConversationAgent._parse_hotel_rooms(user_text)
+            if parsed_rooms is not None:
+                mem.hotel_rooms = parsed_rooms
         if mem.hotel_rooms is None:
             mem.flow_step = "hotel_rooms"
             return "How many rooms do you need? Say a number, or skip for one room."
@@ -4654,10 +4704,15 @@ class ConversationAgent:
                     "Pick a room on the page to continue booking in Super Travel."
                 )
 
+        country = "India"
+        if self._looks_international(city):
+            country = "United Arab Emirates" if "dubai" in city.lower() else country
+
         result = await self._tools.execute(
             "search_hotels",
             {
                 "city": city,
+                "country": country,
                 "check_in": mem.departure_date,
                 "check_out": check_out,
                 "guests": guests,
@@ -4669,9 +4724,22 @@ class ConversationAgent:
         )
         tools_used.append("search_hotels")
         self._update_memory_from_tool(session, "search_hotels", {"city": city}, result)
-        if isinstance(result, dict) and result.get("error") == "login_required":
-            return "Please log in to Super Travel first, then I can show hotels."
+        if isinstance(result, dict) and result.get("error"):
+            if result.get("error") == "login_required":
+                return "Please log in to Super Travel first, then I can show hotels."
+            fail_msg = str(result.get("message") or "").strip()
+            if fail_msg:
+                return self._search_failed_reply("hotels", mem, fail_msg)
         rows = result.get("results") if isinstance(result, dict) else None
+        if isinstance(result, dict) and result.get("hotel_session_id"):
+            session.last_offerings["hotel_search"] = {
+                "session_id": result.get("hotel_session_id"),
+                "next_token": result.get("hotel_next_token"),
+                "city": city,
+                "country": country,
+                "check_in": mem.departure_date,
+                "check_out": check_out,
+            }
         if rows:
             for row in rows:
                 if isinstance(row, dict):
@@ -4679,6 +4747,14 @@ class ConversationAgent:
             mem.flow_step = "hotel_pick"
             return self._speak_options(session, rows, "hotels")
         fail = str(result.get("message") or "") if isinstance(result, dict) else ""
+        list_url = result.get("booking_url") if isinstance(result, dict) else None
+        if list_url:
+            session.last_offerings["hotel_checkout"] = {"booking_url": list_url}
+            mem.flow_step = "hotel_pick"
+            return (
+                f"I opened the hotel list for {city} on your screen for those dates. "
+                "Pick a hotel there, or say another city or date to search again."
+            )
         return self._search_failed_reply("hotels", mem, fail) or (
             f"I could not find hotels in {city} for those dates."
         )
