@@ -1,5 +1,6 @@
 """Prompt helpers."""
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -10,22 +11,49 @@ _PROMPT_PATH = Path(__file__).with_name("system_prompt.txt")
 _agent_store = None
 
 DEFAULT_FIRST_MESSAGE = (
-    "Hello! I'm Sabraah AI — your personal travel, entertainment and lifestyle assistant. "
+    "Hello! 👋 I'm SABRAAH AI — your personal travel, entertainment and lifestyle assistant.\n\n"
     "Whether you're planning a quick getaway, family holiday, group trip, business journey, "
-    "luxury escape, or simply looking for the next event or experience to enjoy, I'm here to make it easier. "
+    "luxury escape, or simply looking for the next event or experience to enjoy, I'm here to make it easier.\n\n"
     "You don't need to have everything figured out. Just tell me why you're travelling, "
     "where you want to go, when you'd like to travel, who you're travelling with, "
     "and what kind of experience you're looking for — and I'll help you plan the journey "
-    "around your needs, preferences and budget. "
-    "I can help you discover, compare, plan and book everything from your travel to your stay and experiences. "
-    "Flights, hotels, trains, buses, cars, cruises, experiences, and holiday packages — "
-    "you can ask me anything, or simply say Plan my trip and let's start from there. "
+    "around your needs, preferences and budget.\n\n"
+    "I can help you discover, compare, plan and book everything from your travel to your stay and experiences.\n\n"
+    "✈️ Flights • 🏨 Hotels • 🚆 Trains • 🚌 Buses • 🚗 Cars • 🚢 Cruises • 🎟️ Experiences • 🌍 Holiday Packages\n\n"
+    'You can ask me anything, or simply say "Plan my trip" and let\'s start from there.\n\n'
+    "So, what are you travelling for, and where would you like to go? 🌍"
+)
+
+FIRST_MESSAGE_TTS = (
+    "Hello! I'm Sabraah AI, your personal travel, entertainment and lifestyle assistant. "
+    "Tell me why you're travelling, where you want to go, when, and who is going — "
+    "I can help with flights, hotels, trains, experiences, and more. "
+    'Or say "Plan my trip" to get started. '
     "So, what are you travelling for, and where would you like to go?"
 )
 
 MAIN_MENU_SHORT_LINE = (
     "Hello again! I'm Sabraah. So, what are you travelling for, and where would you like to go?"
 )
+
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002700-\U000027BF"
+    "\U0001F600-\U0001F64F"
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def text_for_tts(display_text: str) -> str:
+    """Chat may include emojis; voice uses a shorter line for the opening greeting."""
+    normalized = " ".join((display_text or "").split())
+    opening = " ".join(DEFAULT_FIRST_MESSAGE.split())
+    if normalized == opening or normalized.startswith("Hello! 👋 I'm SABRAAH AI"):
+        return FIRST_MESSAGE_TTS
+    cleaned = _EMOJI_RE.sub("", display_text or "")
+    return re.sub(r"[ \t]+\n", "\n", cleaned).strip()
 
 
 def set_agent_store(store) -> None:

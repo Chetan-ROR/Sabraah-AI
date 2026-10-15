@@ -10,7 +10,12 @@ import time
 from typing import Any, Optional
 
 from app.models import ChatResponse, SessionState
-from app.prompts import MAIN_MENU_SHORT_LINE, build_system_message, load_first_message
+from app.prompts import (
+    MAIN_MENU_SHORT_LINE,
+    build_system_message,
+    load_first_message,
+    text_for_tts,
+)
 from app.providers import (
     LLMProvider,
     ProviderError,
@@ -595,7 +600,7 @@ class ConversationAgent:
         booking_snapshot: dict[str, Any],
         started: float,
     ) -> ChatResponse:
-        tts_text = assistant_text
+        tts_text = text_for_tts(assistant_text)
         if offerings_updated and session.last_offerings and not assistant_text:
             assistant_text = SCREEN_OPTIONS_LINE
             tts_text = SCREEN_OPTIONS_LINE
